@@ -28,7 +28,7 @@ static void write_buf(struct tty_struct *tty)
   chars_written = tty->driver->ops->write(tty,
 					  get_no_of_modules,
 					  ARRAY_SIZE(get_no_of_modules));
-  pr_warn("smartio_uart: wrote %d chars out of %lu\n", chars_written, ARRAY_SIZE(get_no_of_modules));
+  pr_warn("smartio_uart: wrote %d chars out of %zu\n", chars_written, ARRAY_SIZE(get_no_of_modules));
   tty_driver_flush_buffer(tty);
 }
 
@@ -77,6 +77,24 @@ static int l_receive_buf2(struct tty_struct *tty,
   return count;
 }
 
+static void l_receive_buf(struct tty_struct *tty, 
+			 const unsigned char *buf,
+			 char *flags,
+			 int count)
+{
+  int i;
+
+  pr_warn("smartio_uart: received %d chars\n", count);
+  if (flags)
+    pr_warn("smartio_uart: flags are %X\n", (unsigned int) *flags);
+  else
+    pr_warn("smartio_uart: flags are not set\n");
+  pr_warn("smartio_uart: char dump:\n");
+  for (i=0; i<count; i++)
+    pr_warn("%x ", buf[i]);
+  pr_warn("\n");
+}
+
 #define MYNUM 28
 
 static struct tty_ldisc_ops smart_ldisc = {
@@ -86,8 +104,11 @@ static struct tty_ldisc_ops smart_ldisc = {
 
   .open = l_open,
   .close = l_close,
+#if (VERSION>=3) &&  (PATCHLEVEL>=12)
   .receive_buf2 = l_receive_buf2,
-
+#else
+.receive_buf = l_receive_buf,
+#endif
 #if 0
   .flush_buffer = l_flush_buffer,
   .chars_in_buffer = l_chars_in_buffer,

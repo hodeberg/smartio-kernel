@@ -18,6 +18,8 @@
 struct smartio_devread_work;
 #define DEV_FIFO_SIZE 128
 
+#define DBG_TRANS
+
 /* Char device major number */
 static int major;
 /* Serialize these two ops:
@@ -164,7 +166,9 @@ static int talk_to_node(struct smartio_node *node,
   struct smartio_comm_buf rx;
   int status;
 
+  dev_warn(&node->dev, "About to call communicate\n");
   status = node->communicate(node, tx, &rx);
+  dev_warn(&node->dev, "Call to communicate done\n");
 
   if (rx.data_len > 0) {
     int msg_type = smartio_get_msg_type(&rx);
@@ -177,6 +181,7 @@ static int talk_to_node(struct smartio_node *node,
     case SMARTIO_REQUEST:
     case SMARTIO_ACKNOWLEDGED:
     case SMARTIO_UNACKNOWLEDGED:
+    default:
       dev_err(&node->dev, "Message type %d not implemented yet\n", msg_type);
       status = -1;
       break;
@@ -197,7 +202,9 @@ static void wq_fcn_post_message(struct work_struct *w)
 #endif
   smartio_add_transaction(my_work->comm_buf);
   talk_to_node(my_work->node, my_work->comm_buf);
+  pr_info("HAOD: talk to node done\n");
   kfree(my_work);
+  pr_info("HAOD: freed work function\n");
 }
 
 
@@ -920,14 +927,28 @@ static ssize_t chardev_direction_show(struct device *dev,
 		   fcn->devattr.isInput ? "in" : "out");
 }
 
+#if (VERSION>=3) && (PATCHLEVEL>10)
 static DEVICE_ATTR_RO(chardev_direction);
-
+#else
+struct device_attribute dev_attr_chardev_direction = __ATTR_RO(chardev_direction);
+#endif
 struct attribute *chardev_function_attrs[] = {
   &dev_attr_chardev_direction.attr,
   NULL
 };
 
+#if (VERSION>=3) && (PATCHLEVEL>10)
 ATTRIBUTE_GROUPS(chardev_function);
+#else
+static const struct attribute_group chardev_function_group = {
+  .attrs = chardev_function_attrs,
+};
+static const struct attribute_group *chardev_function_groups[] = {
+  &chardev_function_group,
+  NULL,
+};
+
+#endif
 
 static struct device_type smartio_chardev_function = {
   .groups = chardev_function_groups

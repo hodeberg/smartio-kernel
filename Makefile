@@ -1,5 +1,6 @@
 KDIR ?= /lib/modules/$$(uname -r)/build
 
+
 default:
 	$(MAKE) -C $(KDIR) M=$$PWD
 
@@ -28,6 +29,9 @@ serio: serio.o convert_serio.o
 
 serio.o: serio.c
 	$(CC) $(serio_flags) -Wall -c $^ -o $@
+
+test_i2c_dev.o: test_i2c_dev.c
+	$(CC)  -Wall -c $^ -o $@
 
 convert_serio.o: convert_serio.c
 	$(CC) $(serio_flags) -Wall -c  $^ -o $@

@@ -5,8 +5,8 @@
 
 
 static struct i2c_device_id my_idtable[] = {
-  { "smart1", 10 },
-  { "smart2", 15 },
+  { "smart1", 0 },
+  { "smart2", 0 },
   {}
 };
 
@@ -17,7 +17,7 @@ struct smart_adapter {
 
 MODULE_DEVICE_TABLE(i2c, my_idtable);
 
-
+#if 0
 static void fill_reply_buffer(struct smartio_comm_buf* rx,
 			      const struct smartio_comm_buf* tx)
 {
@@ -31,7 +31,7 @@ static void fill_reply_buffer(struct smartio_comm_buf* rx,
   smartio_set_direction(rx, SMARTIO_FROM_NODE);
   //pr_warn("HAOD: rx header after set direction is %x\n", rx->transport_header);
 }
-	
+#endif	
 		     
 
 /* This is a dummy communicate(), which does not touch any hardware.
@@ -111,7 +111,7 @@ struct reply {
 
 struct reply deferred_reply;
 
-
+#if 0
 static void write_val_to_attr(const void* indata, struct attr_info* attr)
 {
   pr_info("attr name: %s, attr type: %d\n", attr->name, attr->type);
@@ -122,8 +122,28 @@ static void write_val_to_attr(const void* indata, struct attr_info* attr)
   else
     attr->data.intval = smartio_buf2value(attr->type, indata);
 }
+#endif
 
+static int i2c_exchange(const struct i2c_client *client, 
+			int wc, const char *wbuf,
+			int rc, char *rbuf)
+{
+  struct i2c_msg msgs[2];
+  int ret;
 
+  msgs[0].addr = msgs[1].addr = client->addr;
+  msgs[0].flags = client->flags;
+  msgs[1].flags = client->flags | I2C_M_RD;
+  msgs[0].len = wc;
+  msgs[1].len = rc;
+  msgs[0].buf = (char *) wbuf; /* Casting away const */
+  msgs[1].buf = rbuf;
+  ret = i2c_transfer(client->adapter, msgs, ARRAY_SIZE(msgs));
+  return ret;
+}
+
+#if 0
+/* Dummy communicate for host testing */
 static int communicate(struct smartio_node* this, 
 		     struct smartio_comm_buf* tx,
 		     struct smartio_comm_buf* rx)
@@ -269,19 +289,86 @@ static int communicate(struct smartio_node* this,
   print_hex_dump_bytes("Comm:", DUMP_PREFIX_OFFSET, rx->data, rx->data_len);
   return 0;
 } 
+#else
+static int communicate(struct smartio_node* this, 
+		     struct smartio_comm_buf* tx,
+		     struct smartio_comm_buf* rx)
+{
+  char wbuf[32];
+  char rbuf[32];
+  int result;
+  struct device *smartio_dev = &this->dev;
+  struct device *i2c_dev = smartio_dev->parent;
+
+  dev_warn(&this->dev, "HAOD: calling communicate() function at %p\n", &communicate);
+  dev_warn(i2c_dev, "HAOD: this is the i2c device\n");
+  wbuf[0] = tx->data_len + 2; /* Add size field and header */
+  wbuf[1] = tx->transport_header;
+  memcpy(wbuf+2, tx->data, min((int)(sizeof wbuf - 2), (int)(tx->data_len)));
+  dev_warn(&this->dev, "HAOD: about to call i2c_exchange()\n");
+  result = i2c_exchange(to_i2c_client(i2c_dev), 
+			wbuf[0], wbuf,
+			ARRAY_SIZE(rbuf), rbuf);
+  if (result < 2) {
+    dev_err(&this->dev, "i2c exchange failed, result %d (should be 2)\n", result);
+    return -1;
+  }
+  rx->data_len = rbuf[0] - 2;
+  if (rx->data_len < 3) {
+    dev_err(&this->dev, 
+	    "i2c exchange returned too small a buffer, only  %d bytes\n",
+	    rx->data_len);
+    return -1;
+  }
+  if (rx->data_len > 32) {
+    dev_err(&this->dev, 
+	    "i2c exchange returned too large a buffer,  %d bytes\n",
+	    rx->data_len);
+    return -1;
+  }
+  rx->transport_header = rbuf[1];
+  dev_warn(&this->dev, "HAOD: receive len is %d\n", rx->data_len);
+  dev_warn(&this->dev, "HAOD: rcv data ptr is %p\n", rx->data);
+  memcpy(rx->data, rbuf+2, rx->data_len);
+  print_hex_dump_bytes("Comm:", DUMP_PREFIX_OFFSET, rx->data, rx->data_len);
+  return 0;
+} 
+#endif
+
 
 
 static int my_probe(struct i2c_client* client,
 		    const struct i2c_device_id *id)
 {
   int status;
+#if 0
+  int read_status;
+  const int cmd = 8;
+  const u8 data[] = { 0x20, 0x30, 0x40 };
+  u8 read_data[20];
+#endif
 
   pr_info("Probing smart i2c driver for device %s\n", dev_name(&client->dev));
 
   //  status = devm_smartio_register_node(&client->dev);
   status = dev_smartio_register_node(&client->dev, "smartio-i2c", communicate);
-  
   pr_warn("Probe status was %d\n", status);
+
+#if 0
+  pr_warn("About to send data \n");
+  read_status = i2c_smbus_write_i2c_block_data(client, cmd,
+					       ARRAY_SIZE(data), data);
+  pr_warn("Write status was %d\n", read_status);
+  pr_warn("About to read data \n");
+  read_status = i2c_master_recv(client, read_data, 3);
+  pr_warn("Read status was %d\n", read_status);
+  pr_warn("About to exchange data \n");
+  read_status = i2c_exchange(client, 
+			     3, data,
+			     4, read_data);
+                               
+  pr_warn("Read status was %d\n", read_status);
+#endif
   return status; 
 }
 
