@@ -2,30 +2,15 @@
 #include "smartio.h"
 
 
-static struct smartio_device_id my_idtable[] = {
-  { "adc"},
-  {}
+static const struct smartio_device_id my_idtable[] = {
+  { "adc" },
+  { "dac" },
+  { NULL }
 };
 
 
 MODULE_DEVICE_TABLE(smartio, my_idtable);
 
-static int my_probe(struct smartio_device* client,
-		    const struct smartio_device_id *id)
-{
-  int status = 0;
-
-  pr_warn("Probing smartio adc driver\n");
-
-  pr_warn("Probe status was %d\n", status);
-  return status; 
-}
-
-static int my_remove(struct smartio_device* client)
-{
-  pr_warn("Removing smartio adc driver\n");
-  return 0;
-}
 
 
 static struct smartio_function_driver my_driver = {
@@ -33,8 +18,6 @@ static struct smartio_function_driver my_driver = {
     .name = "smartio_adc",
   },
   .id_table = my_idtable,
-  .probe = my_probe,
-  .remove = my_remove
 };
 
 static int __init my_init(void)

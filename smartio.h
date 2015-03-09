@@ -8,7 +8,7 @@
 
 
 struct smartio_device_id {
-  char name[SMARTIO_NAME_SIZE];
+  char *name;
 };
 // End of what to put in mod_devicetable.h
 
@@ -50,18 +50,21 @@ struct smartio_node {
 		     struct smartio_comm_buf* rx);
 };
 
+
+
 int devm_smartio_register_node(struct device *dev);
 int dev_smartio_register_node(struct device *dev, 
 			      char* name,
 			      int (*communicate)(struct smartio_node* this, 
 						 struct smartio_comm_buf* tx,
 						 struct smartio_comm_buf* rx));
-void smartio_unregister_node(struct smartio_node *node);
+/* dev: the encapsulating hardware device (i2c, spi, etc...) */
+void smartio_unregister_node(struct device *dev);
 
 #define SMARTIO_HEADER_SIZE (1 + 1)
-#define SMARTIO_DATA_SIZE 20
+#define SMARTIO_DATA_SIZE 30
 
-int smartio_get_no_of_modules(struct smartio_node* node);
+int smartio_get_no_of_modules(struct smartio_node* node, char* name);
 
 enum smartio_cmds {
   SMARTIO_GET_NO_OF_MODULES = 1,
@@ -70,6 +73,11 @@ enum smartio_cmds {
   SMARTIO_GET_ATTR_VALUE,
   SMARTIO_SET_ATTR_VALUE,
   SMARTIO_GET_STRING,
+};
+
+enum smartio_status {
+  SMARTIO_SUCCESS,
+  SMARTIO_ILLEGAL_MODULE_INDEX,
 };
 
 struct smartio_comm_buf {

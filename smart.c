@@ -21,13 +21,13 @@ static void fill_reply_buffer(struct smartio_comm_buf* rx,
 			      const struct smartio_comm_buf* tx)
 {
   rx->data_len = 0;
-  pr_warn("HAOD: tx header is %x\n", tx->transport_header);
+  //  pr_warn("HAOD: tx header is %x\n", tx->transport_header);
   rx->transport_header = tx->transport_header;
-  pr_warn("HAOD: rx intial header is %x\n", rx->transport_header);
+  //pr_warn("HAOD: rx intial header is %x\n", rx->transport_header);
   smartio_set_msg_type(rx, SMARTIO_RESPONSE);
-  pr_warn("HAOD: rx header after set msg is %x\n", rx->transport_header);
+  //pr_warn("HAOD: rx header after set msg is %x\n", rx->transport_header);
   smartio_set_direction(rx, SMARTIO_FROM_NODE);
-  pr_warn("HAOD: rx header after set direction is %x\n", rx->transport_header);
+  //pr_warn("HAOD: rx header after set direction is %x\n", rx->transport_header);
 }
 	
 static void smartio_write_16bit(struct smartio_comm_buf* buf, int ofs, int val)
@@ -54,20 +54,54 @@ static void smartio_write_16bit(struct smartio_comm_buf* buf, int ofs, int val)
   SMARTIO_GET_STRING,
 
  */
+struct module_info {
+  char* name;
+  int no_of_attrs;
+};
+
+struct module_info modules[] = {
+  { "smartio-i2c-hod", 2 },
+  { "adc", 2 },
+  { "dac", 4 }
+};
+
+
+
 static int communicate(struct smartio_node* this, 
 		     struct smartio_comm_buf* tx,
 		     struct smartio_comm_buf* rx)
 {
+  int ix = tx->data[0];
+  char* module_name = modules[ix].name;
   dev_warn(&this->dev, "HAOD: calling communicate() function\n");
   switch (tx->data[1]) {
   case SMARTIO_GET_NO_OF_MODULES:
+    if (ix != 0) {
+      dev_err(&this->dev, "Illegal module index %d\n", ix);
+      return -1;
+    }
     fill_reply_buffer(rx, tx);
-    rx->data_len = 3;
+    rx->data_len = 3 + strlen(module_name) + 1;
     rx->data[0] = 0;
     smartio_write_16bit(rx, 1, 3);
+    strcpy(rx->data + 3, module_name);
     break;
-
   case SMARTIO_GET_NO_OF_ATTRIBUTES:
+    if ((ix < 0) || (ix >= ARRAY_SIZE(modules))) {
+      dev_err(&this->dev, "Illegal module index %d\n", ix);
+      rx->data[0] = SMARTIO_ILLEGAL_MODULE_INDEX;
+      return -1;
+    }
+    else
+      rx->data[0] = 0;
+    fill_reply_buffer(rx, tx);
+    rx->data_len = 3 + strlen(modules[ix].name) + 1;
+    smartio_write_16bit(rx, 1, modules[ix].no_of_attrs);
+    strcpy(rx->data + 3, module_name);
+    dev_warn(&this->dev, "Communicate: module ix =  %d\n", ix);
+    dev_warn(&this->dev, "Communicate: no of attrs =  %d\n", modules[ix].no_of_attrs);
+    dev_warn(&this->dev, "Communicate: name =  %s\n", modules[ix].name);
+    break;
   case SMARTIO_GET_ATTRIBUTE_DEFINITION:
   case SMARTIO_GET_ATTR_VALUE:
   case SMARTIO_SET_ATTR_VALUE:
@@ -96,7 +130,7 @@ static int my_probe(struct i2c_client* client,
 static int my_remove(struct i2c_client* client)
 {
   pr_warn("Removing smart i2c driver\n");
-  smartio_unregister_node(dev_get_drvdata(&client->dev));
+  smartio_unregister_node(&client->dev);
   return 0;
 }
 
