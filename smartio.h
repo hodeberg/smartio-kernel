@@ -99,7 +99,7 @@ ID: 3 bits
 Direction: 1 bit
 Type: 2 bits */
 
-#define SIZE2MASK(x) ((1<<(x)) - 1)
+#define MY_SIZE2MASK(x) ((1<<(x)) - 1)
 #define SMARTIO_TRANS_ID_SIZE 3
 
 #define SMARTIO_TRANS_DIR_OFS SMARTIO_TRANS_ID_SIZE
@@ -117,36 +117,36 @@ Type: 2 bits */
 inline void smartio_set_msg_type(struct smartio_comm_buf* buf, int t)
 {
 
-  buf->transport_header &= (~(SIZE2MASK(SMARTIO_TRANS_TYPE_SIZE)) << SMARTIO_TRANS_TYPE_OFS);
-  buf->transport_header |= (t && SIZE2MASK(SMARTIO_TRANS_TYPE_SIZE)) << SMARTIO_TRANS_TYPE_OFS;
+  buf->transport_header &= (~(MY_SIZE2MASK(SMARTIO_TRANS_TYPE_SIZE)) << SMARTIO_TRANS_TYPE_OFS);
+  buf->transport_header |= (t && MY_SIZE2MASK(SMARTIO_TRANS_TYPE_SIZE)) << SMARTIO_TRANS_TYPE_OFS;
 }
 
 inline int smartio_get_msg_type(struct smartio_comm_buf* buf)
 {
-  return (buf->transport_header >> SMARTIO_TRANS_TYPE_OFS) & SIZE2MASK(SMARTIO_TRANS_TYPE_SIZE);
+  return (buf->transport_header >> SMARTIO_TRANS_TYPE_OFS) & MY_SIZE2MASK(SMARTIO_TRANS_TYPE_SIZE);
 }
 
 #define SMARTIO_TO_NODE 1
 #define SMARTIO_FROM_NODE 0
 inline void smartio_set_direction(struct smartio_comm_buf* buf, int d)
 {
-  buf->transport_header &= (~(SIZE2MASK(SMARTIO_TRANS_DIR_SIZE)) << SMARTIO_TRANS_DIR_OFS);
-  buf->transport_header |= (d && SIZE2MASK(SMARTIO_TRANS_DIR_SIZE)) << SMARTIO_TRANS_DIR_OFS;
+  buf->transport_header &= (~(MY_SIZE2MASK(SMARTIO_TRANS_DIR_SIZE)) << SMARTIO_TRANS_DIR_OFS);
+  buf->transport_header |= (d && MY_SIZE2MASK(SMARTIO_TRANS_DIR_SIZE)) << SMARTIO_TRANS_DIR_OFS;
 }
 
 inline int smartio_get_direction(struct smartio_comm_buf* buf)
 {
-  return (buf->transport_header >> SMARTIO_TRANS_DIR_OFS) & SIZE2MASK(SMARTIO_TRANS_DIR_SIZE);
+  return (buf->transport_header >> SMARTIO_TRANS_DIR_OFS) & MY_SIZE2MASK(SMARTIO_TRANS_DIR_SIZE);
 }
 
 inline void smartio_set_transaction_id(struct smartio_comm_buf* buf, int d)
 {
-  buf->transport_header &= ~SIZE2MASK(SMARTIO_TRANS_ID_SIZE);
-  buf->transport_header |= d && SIZE2MASK(SMARTIO_TRANS_ID_SIZE);
+  buf->transport_header &= ~MY_SIZE2MASK(SMARTIO_TRANS_ID_SIZE);
+  buf->transport_header |= d && MY_SIZE2MASK(SMARTIO_TRANS_ID_SIZE);
 }
 
 inline int smartio_get_transaction_id(struct smartio_comm_buf* buf)
 {
-  return buf->transport_header & SIZE2MASK(SMARTIO_TRANS_ID_SIZE);
+  return buf->transport_header & MY_SIZE2MASK(SMARTIO_TRANS_ID_SIZE);
 }
 

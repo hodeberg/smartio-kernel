@@ -375,85 +375,196 @@ int smartio_get_function_info(struct smartio_node* node,
   
   return 0;
 }
+
+static size_t show_fcn_attr(struct device *dev,
+			    struct device_attribute *attr,
+			    char *buf)
+{
+	dev_warn(dev, "Calling show fcn for attr %s\n", 
+		 attr->attr.name);
+	return scnprintf(buf, PAGE_SIZE, "%d\n", 5);
+}
+
+static size_t store_fcn_attr(struct device *dev,
+			    struct device_attribute *attr,
+			    const char *buf,
+			    size_t count)
+{
+	char mybuf[20];
+	
+	snprintf(mybuf, (int) min(count, sizeof mybuf - 1), "%s", buf);
+	dev_warn(dev, "Calling store fcn for attr %s\n, value: %s", 
+		 attr->attr.name,
+		 mybuf);
+	return count;
+}
+
+			    
 EXPORT_SYMBOL_GPL(smartio_get_function_info);
+
+/* All attributes have to be allocated dynamically, as we do not
+   know in advance which attributes there are. This is a bit
+   unorthodox, leading to the usual DEVICE_ATTR macro being
+   a bit unusable.
+   To define a set of attributes in their own directory, just
+   create an additional attribute group with a name (which will
+   be the name of the directory). */
+   
+static struct attribute *create_attr(char *name, bool readonly)
+{
+	DEVICE_ATTR(ro,0444, show_fcn_attr, NULL);
+	DEVICE_ATTR(rw,0644, show_fcn_attr, store_fcn_attr);
+	struct device_attribute *dev_attr = kmalloc(sizeof *dev_attr, GFP_KERNEL);
+	
+	if (!dev_attr)
+		return NULL;
+	*dev_attr = readonly ? dev_attr_ro : dev_attr_rw;
+	dev_attr->attr.name = name;
+	return &dev_attr->attr;
+}
+
+static const struct attribute_group** 
+	define_function_attrs(int function_ix,
+			      int no_of_attributes)
+{
+	struct attribute **attrs_a;
+	struct attribute **attrs_b;
+	struct attribute_group *grp1;
+	struct attribute_group *grp2;
+	const struct attribute_group **groups;
+
+	/* Ignoring failure for now, this is not the real code */
+	attrs_a = kzalloc((sizeof *attrs_a)*3, GFP_KERNEL);
+	attrs_a[0] = create_attr("attr1", true);
+	attrs_a[1] = create_attr("attr2", false);
+	grp1 = kzalloc(sizeof *grp1, GFP_KERNEL);
+	grp1->attrs = attrs_a;
+	attrs_b = kzalloc((sizeof *attrs_b)*3, GFP_KERNEL);
+	attrs_b[0] = create_attr("attr3", true);
+	attrs_b[1] = create_attr("attr4", false);
+	grp2 = kzalloc(sizeof *grp2, GFP_KERNEL);
+	grp2->attrs = attrs_b;
+	grp2->name = "subattrs";
+	groups = kzalloc((sizeof *groups)*3, GFP_KERNEL);
+	groups[0] = grp1;
+	groups[1] = grp2;
+
+	return groups;
+}
+
+
+static int create_function_device(struct smartio_node *node,
+				  int function_ix)
+{
+	char function_name[SMARTIO_NAME_SIZE+1];
+	int no_of_attributes;
+	int status;
+	struct device* function_dev = NULL;
+	
+	status = smartio_get_function_info(node, function_ix,
+					   &no_of_attributes, 						   function_name);
+
+	if (!status) {
+		// Create a new device for this function
+		function_dev = kzalloc(sizeof *function_dev, GFP_KERNEL);
+
+		if (!function_dev) {
+			dev_err(&node->dev,
+				"No memory for function device %s\n",
+				function_name);
+			status = -1;
+			goto done;
+		}
+		dev_warn(&node->dev, "Function name is %s\n", function_name);
+		dev_warn(&node->dev, "Function has %d attributes\n",
+			 no_of_attributes);
+
+		function_dev->parent = &node->dev;
+		dev_set_name(function_dev, function_name);
+		function_dev->bus = &smartio_bus;
+		function_dev->id = 0;
+		//      function_dev->class = &smartio_function_class;
+		function_dev->release = function_release;
+		function_dev->groups = 
+			define_function_attrs(function_ix,
+					      no_of_attributes);
+		if (status < 0) {
+			dev_err(&node->dev,
+				"Could not define function attrs\n");
+			goto release_memory;
+		}	
+		status = device_register(function_dev);
+		if (status < 0) {
+			dev_err(&node->dev, 
+				"Failed to add function device %s\n",
+				function_name);
+			goto release_dev;
+		}
+	}
+	else {
+		dev_err(&node->dev,
+			"Failed to query node for function %s info\n",
+			function_name);
+	}
+	goto done;
+	
+release_dev:
+	put_device(function_dev);
+release_memory:
+	kfree(function_dev);
+done:
+	return status;
+}
+
 
 static int smartio_register_node(struct device *dev, struct smartio_node *node, char *name)
 {
-  int status;
-  int no_of_modules;
-  int i;
-  char node_name[SMARTIO_NAME_SIZE+1];
+	int status = -1;
+	int no_of_modules;
+	int i;
+	char node_name[SMARTIO_NAME_SIZE+1];
 
-  dev_warn(dev, "HAOD: entering register_node\n");
-  device_initialize(&node->dev);
-  node->dev.parent = dev;
-  node->dev.class = &smartio_node_class;
-  node->nr = alloc_new_node_number(node);
-  dev_warn(dev, "HAOD: allocated node number %d\n", node->nr);
-  if (node->nr < 0)
-    return node->nr;
-  // TBD: Use name of parent device as base!!!
-  dev_warn(dev, "HAOD: parent dev name is %s\n", dev_name(dev));
-  no_of_modules = smartio_get_no_of_modules(node, node_name);
-  dev_warn(dev, "HAOD: Node has %d modules\n", no_of_modules);
-  dev_warn(dev, "HAOD: Node name is %s\n", node_name);
-  if (no_of_modules < 0)
-    goto done;
-  dev_set_name(&node->dev, "%s-%d", node_name, node->nr);
-  dev_warn(dev, "HAOD: set node name %s\n", dev_name(&node->dev));
+	dev_warn(dev, "HAOD: entering register_node\n");
+	device_initialize(&node->dev);
+	node->dev.parent = dev;
+	node->dev.class = &smartio_node_class;
+	node->nr = alloc_new_node_number(node);
+	dev_warn(dev, "HAOD: allocated node number %d\n", node->nr);
+	if (node->nr < 0)
+		return node->nr;
+	// TBD: Use name of parent device as base!!!
+	dev_warn(dev, "HAOD: parent dev name is %s\n", dev_name(dev));
+	no_of_modules = smartio_get_no_of_modules(node, node_name);
+	dev_warn(dev, "HAOD: Node has %d modules\n", no_of_modules);
+	dev_warn(dev, "HAOD: Node name is %s\n", node_name);
+	if (no_of_modules < 0)
+		goto done;
+	dev_set_name(&node->dev, "%s-%d", node_name, node->nr);
+	dev_warn(dev, "HAOD: set node name %s\n", dev_name(&node->dev));
 
-  status = device_add(&node->dev);
-  pr_warn("HAOD: added node %s\n", dev_name(&node->dev));
-  if (status < 0) {
-    dev_err(dev, "HAOD: failed to add node device\n");
-    put_device(&node->dev);
-    return status;
-  }
-  dev_warn(dev, "HAOD: Registered master %s\n", dev_name(&node->dev));
+	status = device_add(&node->dev);
+	pr_warn("HAOD: added node %s\n", dev_name(&node->dev));
+	if (status < 0) {
+		dev_err(dev, "HAOD: failed to add node device\n");
+		put_device(&node->dev);
+		return status;
+	}
+	dev_warn(dev, "HAOD: Registered master %s\n", dev_name(&node->dev));
 
-  mutex_lock(&core_lock);
-  list_add_tail(&node->list, &smartio_node_list);
-  mutex_unlock(&core_lock);
-  dev_set_drvdata(dev, node);
+	mutex_lock(&core_lock);
+	list_add_tail(&node->list, &smartio_node_list);
+	mutex_unlock(&core_lock);
+	dev_set_drvdata(dev, node);
 
-  for (i=1; i < no_of_modules; i++) {
-    char function_name[SMARTIO_NAME_SIZE+1];
-    int no_of_attributes;
+	for (i=1; i < no_of_modules; i++) {
+		status = create_function_device(node, i);
+		if (!status) 
+			goto done;
+	}
+	return 0;
 
-    status = smartio_get_function_info(node, i, &no_of_attributes, function_name);
-
-    if (!status) {
-      // Create a new device for this function
-      struct device* function_dev = kzalloc(sizeof *function_dev, GFP_KERNEL);
-
-      if (!function_dev) {
-	dev_err(&node->dev, "No memory for function device %s\n", function_name);
-	continue;
-      }
-      dev_warn(&node->dev, "Function name is %s\n", function_name);
-      dev_warn(&node->dev, "Function has %d attributes\n", no_of_attributes);
-      
-      function_dev->parent = &node->dev;
-      dev_set_name(function_dev, function_name);
-      function_dev->bus = &smartio_bus;
-      function_dev->id = 0;
-//      function_dev->class = &smartio_function_class;
-	function_dev->release = function_release;
-      status = device_register(function_dev);
-      if (status < 0) {
-	dev_err(&node->dev, "Failed to add function device %s\n", function_name);
-	put_device(function_dev);
-	kfree(function_dev);
-      }
-    }
-    else {
-      dev_err(&node->dev, "Failed to query node for function %s info\n", function_name);
-    }
-  }
-  return 0;
-
- done:
-  return -1;
+done:
+	return status;
 }
 
 static int dev_unregister_function(struct device* dev, void* null)
