@@ -412,6 +412,7 @@ EXPORT_SYMBOL_GPL(smartio_get_function_info);
    
 static struct attribute *create_attr(char *name, bool readonly)
 {
+	char* name_cpy;
 	DEVICE_ATTR(ro,0444, show_fcn_attr, NULL);
 	DEVICE_ATTR(rw,0644, show_fcn_attr, store_fcn_attr);
 	struct device_attribute *dev_attr = kmalloc(sizeof *dev_attr, GFP_KERNEL);
@@ -419,9 +420,18 @@ static struct attribute *create_attr(char *name, bool readonly)
 	if (!dev_attr)
 		return NULL;
 	*dev_attr = readonly ? dev_attr_ro : dev_attr_rw;
-	dev_attr->attr.name = name;
+	name_cpy = kmalloc(strlen(name)+1, GFP_KERNEL);
+	if (!name_cpy)
+		goto release_dev;
+	strcpy(name_cpy, name);
+	dev_attr->attr.name = name_cpy;
 	return &dev_attr->attr;
+	
+release_dev:
+	kfree(dev_attr);
+	return NULL;	
 }
+
 
 static const struct attribute_group** 
 	define_function_attrs(int function_ix,
@@ -432,6 +442,7 @@ static const struct attribute_group**
 	struct attribute_group *grp1;
 	struct attribute_group *grp2;
 	const struct attribute_group **groups;
+	char* grp_name;
 
 	/* Ignoring failure for now, this is not the real code */
 	attrs_a = kzalloc((sizeof *attrs_a)*3, GFP_KERNEL);
@@ -444,7 +455,9 @@ static const struct attribute_group**
 	attrs_b[1] = create_attr("attr4", false);
 	grp2 = kzalloc(sizeof *grp2, GFP_KERNEL);
 	grp2->attrs = attrs_b;
-	grp2->name = "subattrs";
+	grp_name = kmalloc(strlen("subattrs")+1, GFP_KERNEL);
+	strcpy(grp_name, "subattrs");
+	grp2->name = grp_name;
 	groups = kzalloc((sizeof *groups)*3, GFP_KERNEL);
 	groups[0] = grp1;
 	groups[1] = grp2;
@@ -452,6 +465,36 @@ static const struct attribute_group**
 	return groups;
 }
 
+static void free_attributes(struct device* dev)
+{
+	const struct attribute_group** group;
+	if (!dev->groups) 
+		return;
+	for (group = dev->groups; *group != NULL; group++) {
+		if ((*group)->attrs) {
+			struct attribute** attr;
+
+			for (attr = (*group)->attrs; *attr != NULL; attr++) {
+				struct attribute *a = *attr;
+				struct device_attribute* d;
+				
+				pr_warn("Free: attr name %s\n", a->name);
+				kfree(a->name);
+				d = container_of(a, struct device_attribute, attr);
+				pr_warn("Free: attribute\n");
+				kfree(d);
+			}
+			pr_warn("Free: group attrs\n");
+			kfree((*group)->attrs);
+		}
+		pr_warn("Free: group name %s\n", (*group)->name);
+		kfree((*group)->name);
+		pr_warn("Free: group attrs\n");
+		kfree(*group);
+	}
+	pr_warn("Free: groups\n");
+	kfree(dev->groups);
+}
 
 static int create_function_device(struct smartio_node *node,
 				  int function_ix)
@@ -574,6 +617,7 @@ static int dev_unregister_function(struct device* dev, void* null)
 	dev_warn(dev, "Unregistering function %s\n", dev_name(dev));
 	function = container_of(dev, struct smartio_device, dev); 
 	device_unregister(dev);
+	free_attributes(dev);
 	return 0;
 }
 
