@@ -261,13 +261,13 @@ static int smartio_read_16bit(struct smartio_comm_buf* buf, int ofs)
   return (buf->data[ofs] << 8) + buf->data[ofs+1];
 }
 
-#if 0
+
 static void smartio_write_16bit(struct smartio_comm_buf* buf, int ofs, int val)
 {
   buf->data[ofs] = val >> 8;
   buf->data[ofs+1] = val;
 }
-#endif
+
 
 int smartio_get_no_of_modules(struct smartio_node* node, char *name)
 {
@@ -372,6 +372,57 @@ int smartio_get_function_info(struct smartio_node* node,
   *no_of_attrs = smartio_read_16bit(buf, 1);
   strncpy(name, buf->data+3, SMARTIO_NAME_SIZE);
   name[SMARTIO_NAME_SIZE] = '\0';
+  
+  return 0;
+}
+
+struct attr_info {
+  uint8_t input:1;
+  uint8_t output:1;
+  uint8_t device:1;
+  uint8_t arr_size;
+  uint8_t type;
+  char name[SMARTIO_NAME_SIZE+1];
+};
+
+int smartio_get_attr_info(struct smartio_node* node, 
+	       	          int module,
+			  int attr,
+			  struct attr_info *info)
+{
+  struct smartio_comm_buf* buf;
+  int status;
+
+  buf = kzalloc(sizeof *buf, GFP_KERNEL);
+  if (!buf) 
+    return -ENOMEM;
+
+  buf->data_len = 4; // module + command + attr ix
+  buf->data[0] = module;
+  buf->data[1] = SMARTIO_GET_ATTRIBUTE_DEFINITION;
+  smartio_write_16bit(buf, 2, attr);
+  status = post_request(node, buf);
+  if (status < 0) {
+    dev_err(&node->dev, "DARN DARN DARN\n");
+    return status;
+  }
+
+  if (buf->data_len <= 3) {
+    dev_err(&node->dev, "DARN DARN DARN 2\n");
+    return -ENOMEM; // TBD: err to indicate wrong data size
+  }
+  if (buf->data[0]) {
+    dev_err(&node->dev, "DARN DARN DARN msg status was %d\n", buf->data[0]);
+    return -ENOMEM; // TBD: err to indicate wrong module index
+  }
+
+  info->input = (buf->data[1] & IO_IS_INPUT) ? 1 : 0;
+  info->output = (buf->data[1] & IO_IS_OUTPUT) ? 1 : 0;
+  info->device = (buf->data[1] & IO_IS_DEVICE) ? 1 : 0;
+  info->arr_size = buf->data[2];
+  info->type = buf->data[3];
+  strncpy(info->name, buf->data+4, SMARTIO_NAME_SIZE);
+  info->name[SMARTIO_NAME_SIZE] = '\0';
   
   return 0;
 }

@@ -35,6 +35,11 @@ static void smartio_write_16bit(struct smartio_comm_buf* buf, int ofs, int val)
   buf->data[ofs] = val >> 8;
   buf->data[ofs+1] = val;
 }
+
+static int smartio_read_16bit(struct smartio_comm_buf* buf, int ofs)
+{
+  return  (buf->data[ofs] << 8) | buf->data[ofs+1];
+}
 		     
 
 /* This is a dummy communicate(), which does not touch any hardware.
@@ -54,17 +59,54 @@ static void smartio_write_16bit(struct smartio_comm_buf* buf, int ofs, int val)
   SMARTIO_GET_STRING,
 
  */
+
+
+
+struct attr_info {
+  uint8_t directions;
+  uint8_t arraySize;
+  enum smartio_io_types type;
+  char *name;
+  union {
+    int val;
+    char* str;
+  };
+};
+
+struct attr_info adc_attrs[] = {
+  { IO_IS_INPUT, 0, IO_STRING, "offset", {.str = "42"} },
+  { IO_IS_OUTPUT, 0, IO_TEMP_C, "temp", {.val = 1000} }
+};
+
+struct attr_info dac_attrs[] = {
+  { IO_IS_INPUT, 0, IO_STRING, "gain", {.str = "large"} },
+  { IO_IS_INPUT | IO_IS_OUTPUT, 0, IO_TEMP_C, "temp", {.val =2000} },
+  { IO_IS_INPUT | IO_IS_DEVICE, 0, IO_TEMP_K, "dev_temp", {.val = 500} }
+};
+
+struct attr_info node_attrs[] = {
+  { IO_IS_INPUT | IO_IS_OUTPUT, 3, IO_INT32, "en", {.val = 1} }
+};
+
+
 struct module_info {
   char* name;
   int no_of_attrs;
+  struct attr_info  *attrs;
 };
 
 struct module_info modules[] = {
-  { "smartio-i2c-hod", 2 },
-  { "adc", 2 },
-  { "dac", 4 }
+  { "smartio-i2c-hod", ARRAY_SIZE(node_attrs), node_attrs },
+  { "adc", ARRAY_SIZE(adc_attrs), adc_attrs },
+  { "dac", ARRAY_SIZE(dac_attrs), dac_attrs }
 };
 
+struct reply {
+  int len;
+  char data[40];
+};
+
+struct reply deferred_reply;
 
 
 static int communicate(struct smartio_node* this, 
@@ -72,6 +114,8 @@ static int communicate(struct smartio_node* this,
 		     struct smartio_comm_buf* rx)
 {
   int ix = tx->data[0];
+  int attr_ix;
+  struct attr_info *attr = NULL;
   char* module_name = modules[ix].name;
   dev_warn(&this->dev, "HAOD: calling communicate() function\n");
   switch (tx->data[1]) {
@@ -103,6 +147,29 @@ static int communicate(struct smartio_node* this,
     dev_warn(&this->dev, "Communicate: name =  %s\n", modules[ix].name);
     break;
   case SMARTIO_GET_ATTRIBUTE_DEFINITION:
+    if ((ix < 0) || (ix >= ARRAY_SIZE(modules))) {
+      dev_err(&this->dev, "Illegal module index %d\n", ix);
+      rx->data[0] = SMARTIO_ILLEGAL_MODULE_INDEX;
+      return -1;
+    }
+    else {
+      attr_ix = smartio_read_16bit(tx, 2);
+
+      if (!((attr_ix >= 0) && (attr_ix < modules[ix].no_of_attrs))) {
+	rx->data[0] = SMARTIO_ILLEGAL_ATTRIBUTE_INDEX;
+	return -1;
+      }
+      else
+	rx->data[0] = 0;
+    }
+    fill_reply_buffer(rx, tx);
+    attr = &modules[ix].attrs[attr_ix];
+    rx->data[1] = attr->directions;
+    rx->data[2] = attr->arraySize;
+    rx->data[3] = attr->type;
+    strcpy(rx->data + 4, attr->name);
+    rx->data_len = 4 + strlen(attr->name) + 1;
+    break;
   case SMARTIO_GET_ATTR_VALUE:
   case SMARTIO_SET_ATTR_VALUE:
   case SMARTIO_GET_STRING:
@@ -110,7 +177,7 @@ static int communicate(struct smartio_node* this,
     break;
   }
   return 0;
-}
+} 
 
 static int my_probe(struct i2c_client* client,
 		    const struct i2c_device_id *id)

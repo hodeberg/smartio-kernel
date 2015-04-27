@@ -75,10 +75,27 @@ enum smartio_cmds {
   SMARTIO_GET_STRING,
 };
 
+enum smartio_io_types {
+  IO_STRING,
+  IO_TEMP_C,
+  IO_TEMP_K,
+  IO_INT8,
+  IO_INT16,
+  IO_INT32,
+  /* To be continued */
+};
+
 enum smartio_status {
   SMARTIO_SUCCESS,
   SMARTIO_ILLEGAL_MODULE_INDEX,
+  SMARTIO_ILLEGAL_ATTRIBUTE_INDEX,
 };
+
+/* The attribute definition */
+#define IO_IS_INPUT 0x80
+#define IO_IS_OUTPUT 0x40
+#define IO_IS_DEVICE 0x20
+
 
 struct smartio_comm_buf {
   struct list_head list;
