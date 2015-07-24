@@ -1,0 +1,49 @@
+Linux drivers for the smartio system.
+
+On the remote node, SW and tables defines a set of I/O functions
+(adc, dac, timers, rotary encoders, temp measurement, whatever).
+On the Linux side, a lot of sysfs entries are created by drivers
+as the core driver introspects the remote node.
+
+
+Files:
+adc.c: 
+Contains both adc and dac function driver.
+
+smart.c:
+The I2C driver controlling the I2C device. Should be a very
+thin device, but currently also contains a dummy 
+communicate() which does not communicate with the actual hardware.
+It is this driver which starts all the introspection by
+its registration.
+
+smartio-core.c:
+Contains the smartio bus code. Also contains a large amount of code for
+introspection (querying the node and creating sysfs entries) and queueing
+of messages to/from the node.
+
+smartio.h:
+Header file with many common definitions.
+
+
+
+Registration:
+
+smart.c: my_probe() calls dev_smartio_register_node()
+smartio_core.c: dev_smartio_register_node() calls smartio_register_node()
+    smartio_register_node(): 
+        N = smartio_get_no_of_modules()  // One introspection request
+	for (i=0; i < N; i++) create_function_device(node, i)
+
+create_function_device():
+    smartio_get_function_info(): introspection request
+    define_function_attrs() : initialize the attribute group
+    device_register(): register the function device.
+NOTE: the attribute group is intentionally defined before creating the device,
+to avoid race conditions. See the kernel documentation.
+
+
+define_function_attrs() :
+    Currently uses dummy code which immediately initializes tables with
+    hardcoded names. Should use introspection.
+		

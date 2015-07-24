@@ -18,6 +18,8 @@ struct smartio_device {
   struct device dev;
 };
 
+
+
 struct smartio_comm_buf;
 
 struct smartio_function_driver {
@@ -95,6 +97,7 @@ enum smartio_status {
 #define IO_IS_INPUT 0x80
 #define IO_IS_OUTPUT 0x40
 #define IO_IS_DEVICE 0x20
+#define IO_IS_DIR 0x10
 
 
 struct smartio_comm_buf {

@@ -157,6 +157,7 @@ static int communicate(struct smartio_node* this,
 
       if (!((attr_ix >= 0) && (attr_ix < modules[ix].no_of_attrs))) {
 	rx->data[0] = SMARTIO_ILLEGAL_ATTRIBUTE_INDEX;
+        dev_err(&this->dev, "Illegal attribute index %d\n", attr_ix);
 	return -1;
       }
       else
@@ -176,6 +177,7 @@ static int communicate(struct smartio_node* this,
     dev_err(&this->dev, "HAOD: communicate(): command %d not implemented\n", (int) tx->data[1]);
     break;
   }
+  print_hex_dump_bytes("Comm:", DUMP_PREFIX_OFFSET, rx->data, rx->data_len);
   return 0;
 } 
 

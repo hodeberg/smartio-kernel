@@ -380,6 +380,7 @@ struct attr_info {
   uint8_t input:1;
   uint8_t output:1;
   uint8_t device:1;
+  uint8_t isDir:1;
   uint8_t arr_size;
   uint8_t type;
   char name[SMARTIO_NAME_SIZE+1];
@@ -419,11 +420,18 @@ int smartio_get_attr_info(struct smartio_node* node,
   info->input = (buf->data[1] & IO_IS_INPUT) ? 1 : 0;
   info->output = (buf->data[1] & IO_IS_OUTPUT) ? 1 : 0;
   info->device = (buf->data[1] & IO_IS_DEVICE) ? 1 : 0;
+  info->isDir = (buf->data[1] & IO_IS_DIR) ? 1 : 0;
   info->arr_size = buf->data[2];
   info->type = buf->data[3];
   strncpy(info->name, buf->data+4, SMARTIO_NAME_SIZE);
   info->name[SMARTIO_NAME_SIZE] = '\0';
   
+  dev_warn(&node->dev, "Read attribute def\n");
+  dev_warn(&node->dev, "buf len: %d\n", buf->data_len);
+  dev_warn(&node->dev, "flags: %d\n", buf->data[1]);
+  dev_warn(&node->dev, "arr_size: %d\n", buf->data[2]);
+  dev_warn(&node->dev, "type: %d\n", buf->data[3]);
+  dev_warn(&node->dev, "name: %s\n", info->name);
   return 0;
 }
 
@@ -461,7 +469,7 @@ EXPORT_SYMBOL_GPL(smartio_get_function_info);
    create an additional attribute group with a name (which will
    be the name of the directory). */
    
-static struct attribute *create_attr(char *name, bool readonly)
+static struct attribute *create_attr(const char *name, bool readonly)
 {
 	char* name_cpy;
 	DEVICE_ATTR(ro,0444, show_fcn_attr, NULL);
@@ -473,28 +481,227 @@ static struct attribute *create_attr(char *name, bool readonly)
 	*dev_attr = readonly ? dev_attr_ro : dev_attr_rw;
 	name_cpy = kmalloc(strlen(name)+1, GFP_KERNEL);
 	if (!name_cpy)
-		goto release_dev;
+		goto release_attr;
 	strcpy(name_cpy, name);
 	dev_attr->attr.name = name_cpy;
 	return &dev_attr->attr;
 	
-release_dev:
+release_attr:
 	kfree(dev_attr);
 	return NULL;	
 }
 
 
-static const struct attribute_group** 
-	define_function_attrs(int function_ix,
-			      int no_of_attributes)
+
+/* Read the number of groups. Note that there always is at least
+   one group; the default one. */
+int get_no_of_groups(struct attr_info* info, int size)
 {
+  int i;
+  int count = 1;
+
+  for (i=0; i < size; i++)
+    if (info[i].isDir) count++;
+
+  return count;
+}
+
+int get_no_of_attrs_in_group(const struct attr_info *attr, const struct attr_info * const end)
+{
+	int count = 0;
+
+	while ((attr != end) && (!attr->isDir)) {
+	  count++;
+	  attr++;
+	}
+
+	return count;
+}
+
+
+void free_group(struct attribute_group *grp)
+{
+	if (grp->attrs) {
+		struct attribute** attr;
+
+		for (attr = grp->attrs; *attr != NULL; attr++) {
+			struct attribute *a = *attr;
+			struct device_attribute* d;
+				
+			pr_warn("Free: attr name %s\n", a->name);
+			kfree(a->name);
+			d = container_of(a, struct device_attribute, attr);
+			pr_warn("Free: attribute\n");
+			kfree(d);
+		}
+		pr_warn("Free: group attrs\n");
+		kfree(grp->attrs);
+		grp->attrs = NULL;
+		pr_warn("Free: group name %s\n", grp->name);
+		kfree(grp->name);
+		grp->name = NULL;
+	}
+
+}
+
+
+void free_groups(struct attribute_group** groups)
+{
+	while (*groups) {
+	  pr_warn("Free: group\n");
+	  free_group((struct attribute_group *) *groups);
+	  groups++;
+	}
+}
+
+
+/* Debugging function to ensure we created the right structure */
+void dump_group_tree(const struct attribute_group** groups)
+{
+  int g;
+  
+
+  pr_warn("dumping group tree\n");
+  for (g=0; *groups != NULL; groups++, g++) {
+    struct attribute **attr = (*groups)->attrs;
+
+    pr_warn("group %d\n", g);
+    pr_warn("group ptr %p\n", *groups);
+    pr_warn("group name ptr %p\n", (*groups)->name);
+    pr_warn("group name:%s\n", (*groups)->name);
+    for (; *attr != 0; attr++) {
+      pr_warn("attrs ptr:%p\n", attr);
+      pr_warn("attr ptr:%p\n", *attr);
+      pr_warn("attr name:%s\n", (*attr)->name);
+      pr_warn("attr mode:%o\n", (unsigned int) (*attr)->mode);
+    }
+
+  }
+}
+
+
+/* Create attributes for one group. If start is not a directory definition,
+   then this is the default group.
+   Returns pointer to the attribute after this group. That can be:
+      the definition of a new group
+      the end pointer when we are done
+      null for error */
+const struct attr_info *process_one_attr_group(const struct attr_info *start, 
+					       const struct attr_info * const end,
+					       struct attribute_group * const grp)
+{
+	const struct attr_info *cur_attr = start;
+	int i;
+	int size = 0;
+
+	pr_warn("attr_group: start = %p\n", start);
+	pr_warn("attr_group: end = %p\n", end);
+	pr_warn("attr_group: grp = %p\n", grp);
+	if (cur_attr->isDir) {
+	  	grp->name = kmalloc(strlen(cur_attr->name) + 1, GFP_KERNEL);
+		if (!grp->name) {
+			pr_err("Failed to allocate attribute name %s\n", cur_attr->name);
+			return NULL;
+		}
+		pr_warn("attr_group: found directory attribute\n");
+		cur_attr++;
+	}
+	size = get_no_of_attrs_in_group(cur_attr, end);
+	pr_warn("attr_group: size = %d\n", size);
+	grp->attrs = kzalloc((sizeof grp->attrs) * (size + 1), GFP_KERNEL);
+	for (i=0; i < size; i++, cur_attr++) {
+	  pr_warn("attr_group: attr name: %s\n", cur_attr->name);
+	  pr_warn("attr_group: attr input: %d\n", cur_attr->input);
+	  grp->attrs[i] = create_attr(cur_attr->name, cur_attr->input == 0);
+	  if (!grp->attrs[i]) {
+	    pr_err("process_one_attr_group: Failed to create attribute\n");
+	    goto cleanup;
+	  }
+	}
+	return cur_attr;
+
+ cleanup:
+	free_group(grp);
+	return NULL;
+}
+
+
+
+
+/* The structure of the attribute group is:
+1) Each attribute is in a struct attribute
+2) Arrays of attributes are gathered in struct attribute_group. If a name
+   is given to the group, that shows up as an additional directory
+   in sysfs
+   3) The groups are gathered in an array.
+During introspection, information about each attribute is returned.
+If an attribute has "isDirectory" bit set, it will denote the 
+name of a group, and subsequent attributes until the next isDirectory
+item is put in that group.
+Current limitations:
+  Device nodes not handled.
+  Attribute arrays not handled. 
+*/
+static struct attribute_group** 
+define_function_attrs(struct smartio_node* node,
+		      int module,
+		      int no_of_attributes)
+{
+#if 0
 	struct attribute **attrs_a;
 	struct attribute **attrs_b;
 	struct attribute_group *grp1;
 	struct attribute_group *grp2;
-	const struct attribute_group **groups;
 	char* grp_name;
+#endif
+	struct attribute_group **groups = NULL;
+	struct attr_info info[no_of_attributes];
+	const struct attr_info * const info_end = info + no_of_attributes;
+	const struct attr_info *info_current = info;
+	int i;
+	int no_of_groups;	
 
+	dev_warn(&node->dev, "define_function_attrs: entry\n");
+	dev_warn(&node->dev, "define_function_attrs: attrs to process: %d\n", no_of_attributes);
+	for (i=0; i < no_of_attributes; i++) {
+	  int res;
+
+	  dev_warn(&node->dev, "processing attr ix: %d\n", i);
+	  res = smartio_get_attr_info(node, module, i, &info[i]);
+
+	  if (res != 0) {
+	    dev_err(&node->dev, "Failed reading attribute #%d\n", i);
+	    return NULL;
+	  }
+	}
+
+	no_of_groups = get_no_of_groups(info, no_of_attributes);
+        dev_warn(&node->dev, "No of groups are: %d\n", no_of_groups);
+
+	/* Allocate array for group pointers and ending null pointer */
+	groups = kzalloc((sizeof *groups) * (no_of_groups+1), GFP_KERNEL);
+	if (!groups) {
+	  dev_err(&node->dev, "Failed to allocate groups array\n");
+	  goto fail_alloc_groups;
+	}
+
+	dev_warn(&node->dev, "define_function_attrs: beginning to create groups\n");
+	for (i=0; i < no_of_groups; i++) {
+	  if (!info_current) {
+	    dev_err(&node->dev, "Failed parsing group\n");
+	    goto cleanup;
+	  }
+	  groups[i] = kzalloc(sizeof *groups[i], GFP_KERNEL);
+	  if (!groups[i]) {
+	    dev_err(&node->dev, "Failed allocating a group\n");
+	    goto cleanup;
+	  }
+	  info_current = process_one_attr_group(info_current, info_end, groups[i]);
+	}
+	return groups;
+
+
+#if 0
 	/* Ignoring failure for now, this is not the real code */
 	attrs_a = kzalloc((sizeof *attrs_a)*3, GFP_KERNEL);
 	attrs_a[0] = create_attr("attr1", true);
@@ -512,10 +719,16 @@ static const struct attribute_group**
 	groups = kzalloc((sizeof *groups)*3, GFP_KERNEL);
 	groups[0] = grp1;
 	groups[1] = grp2;
-
+#endif
+ cleanup:
+	free_groups(groups);
+	kfree(groups);
+	groups = NULL;
+ fail_alloc_groups:
 	return groups;
 }
 
+#if 0
 static void free_attributes(struct device* dev)
 {
 	const struct attribute_group** group;
@@ -546,6 +759,7 @@ static void free_attributes(struct device* dev)
 	pr_warn("Free: groups\n");
 	kfree(dev->groups);
 }
+#endif
 
 static int create_function_device(struct smartio_node *node,
 				  int function_ix)
@@ -556,7 +770,8 @@ static int create_function_device(struct smartio_node *node,
 	struct device* function_dev = NULL;
 	
 	status = smartio_get_function_info(node, function_ix,
-					   &no_of_attributes, 						   function_name);
+					   &no_of_attributes,
+					   function_name);
 
 	if (!status) {
 		// Create a new device for this function
@@ -579,14 +794,20 @@ static int create_function_device(struct smartio_node *node,
 		function_dev->id = 0;
 		//      function_dev->class = &smartio_function_class;
 		function_dev->release = function_release;
-		function_dev->groups = 
-			define_function_attrs(function_ix,
-					      no_of_attributes);
-		if (status < 0) {
+		function_dev->groups = (const struct attribute_group**)
+		  define_function_attrs(node, 
+					function_ix,
+					no_of_attributes);
+		if (!function_dev->groups) {
 			dev_err(&node->dev,
 				"Could not define function attrs\n");
 			goto release_memory;
-		}	
+		}
+
+		dump_group_tree(function_dev->groups);
+#if 0
+		function_dev->groups = NULL;
+#endif
 		status = device_register(function_dev);
 		if (status < 0) {
 			dev_err(&node->dev, 
@@ -603,6 +824,11 @@ static int create_function_device(struct smartio_node *node,
 	goto done;
 	
 release_dev:
+	if (function_dev->groups) {
+	  free_groups((struct attribute_group**) function_dev->groups);
+	  kfree(function_dev->groups);
+	  function_dev->groups = NULL;
+	}
 	put_device(function_dev);
 release_memory:
 	kfree(function_dev);
@@ -668,7 +894,8 @@ static int dev_unregister_function(struct device* dev, void* null)
 	dev_warn(dev, "Unregistering function %s\n", dev_name(dev));
 	function = container_of(dev, struct smartio_device, dev); 
 	device_unregister(dev);
-	free_attributes(dev);
+	free_groups((struct attribute_group**) dev->groups);
+	kfree(dev->groups);
 	return 0;
 }
 
