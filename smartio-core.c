@@ -435,19 +435,19 @@ int smartio_get_attr_info(struct smartio_node* node,
   return 0;
 }
 
-static size_t show_fcn_attr(struct device *dev,
-			    struct device_attribute *attr,
-			    char *buf)
+static ssize_t show_fcn_attr(struct device *dev,
+			     struct device_attribute *attr,
+			     char *buf)
 {
 	dev_warn(dev, "Calling show fcn for attr %s\n", 
 		 attr->attr.name);
 	return scnprintf(buf, PAGE_SIZE, "%d\n", 5);
 }
 
-static size_t store_fcn_attr(struct device *dev,
-			    struct device_attribute *attr,
-			    const char *buf,
-			    size_t count)
+static ssize_t store_fcn_attr(struct device *dev,
+			      struct device_attribute *attr,
+			      const char *buf,
+			      size_t count)
 {
 	char mybuf[20];
 	
@@ -472,18 +472,20 @@ EXPORT_SYMBOL_GPL(smartio_get_function_info);
 static struct attribute *create_attr(const char *name, bool readonly)
 {
 	char* name_cpy;
-	DEVICE_ATTR(ro,0444, show_fcn_attr, NULL);
-	DEVICE_ATTR(rw,0644, show_fcn_attr, store_fcn_attr);
-	struct device_attribute *dev_attr = kmalloc(sizeof *dev_attr, GFP_KERNEL);
+	struct device_attribute *dev_attr = kzalloc(sizeof *dev_attr, GFP_KERNEL);
 	
 	if (!dev_attr)
 		return NULL;
-	*dev_attr = readonly ? dev_attr_ro : dev_attr_rw;
+	if (!readonly)
+	  dev_attr->store = store_fcn_attr;
+	dev_attr->attr.mode = readonly ? 0444 : 0644;
+	dev_attr->show = show_fcn_attr;
 	name_cpy = kmalloc(strlen(name)+1, GFP_KERNEL);
 	if (!name_cpy)
 		goto release_attr;
 	strcpy(name_cpy, name);
 	dev_attr->attr.name = name_cpy;
+	sysfs_attr_init(dev_attr->attr);
 	return &dev_attr->attr;
 	
 release_attr:
