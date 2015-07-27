@@ -68,6 +68,11 @@ static struct class smartio_function_class = {
 };
 
 
+struct fcn_attribute {
+  struct device_attribute dev_attr;
+  int fcn_ix;
+};
+
 // The workqueue used for all smartio work
 static struct workqueue_struct *work_queue;
 
@@ -439,8 +444,9 @@ static ssize_t show_fcn_attr(struct device *dev,
 			     struct device_attribute *attr,
 			     char *buf)
 {
-	dev_warn(dev, "Calling show fcn for attr %s\n", 
-		 attr->attr.name);
+	struct fcn_attribute* fcn_attr = container_of(attr, struct fcn_attribute, dev_attr);
+	dev_warn(dev, "Calling show fcn for attr %s, no %d\n", 
+		 attr->attr.name, fcn_attr->fcn_ix);
 	return scnprintf(buf, PAGE_SIZE, "%d\n", 5);
 }
 
@@ -450,10 +456,12 @@ static ssize_t store_fcn_attr(struct device *dev,
 			      size_t count)
 {
 	char mybuf[20];
+	struct fcn_attribute* fcn_attr = container_of(attr, struct fcn_attribute, dev_attr);
 	
 	snprintf(mybuf, (int) min(count, sizeof mybuf - 1), "%s", buf);
-	dev_warn(dev, "Calling store fcn for attr %s\n, value: %s", 
+	dev_warn(dev, "Calling store fcn for attr %s\n, ix %d,  value: %s", 
 		 attr->attr.name,
+		 fcn_attr->fcn_ix,
 		 mybuf);
 	return count;
 }
@@ -468,28 +476,29 @@ EXPORT_SYMBOL_GPL(smartio_get_function_info);
    To define a set of attributes in their own directory, just
    create an additional attribute group with a name (which will
    be the name of the directory). */
-   
-static struct attribute *create_attr(const char *name, bool readonly)
+static struct attribute *create_attr(const char *name, bool readonly, int fcn_number)
 {
 	char* name_cpy;
-	struct device_attribute *dev_attr = kzalloc(sizeof *dev_attr, GFP_KERNEL);
+	struct fcn_attribute *fcn_attr = kzalloc(sizeof *fcn_attr, GFP_KERNEL);
 	
-	if (!dev_attr)
+	if (!fcn_attr)
 		return NULL;
+
 	if (!readonly)
-	  dev_attr->store = store_fcn_attr;
-	dev_attr->attr.mode = readonly ? 0444 : 0644;
-	dev_attr->show = show_fcn_attr;
+	  fcn_attr->dev_attr.store = store_fcn_attr;
+	fcn_attr->dev_attr.attr.mode = readonly ? 0444 : 0644;
+	fcn_attr->dev_attr.show = show_fcn_attr;
+	fcn_attr->fcn_ix = fcn_number;
 	name_cpy = kmalloc(strlen(name)+1, GFP_KERNEL);
 	if (!name_cpy)
 		goto release_attr;
 	strcpy(name_cpy, name);
-	dev_attr->attr.name = name_cpy;
-	sysfs_attr_init(dev_attr->attr);
-	return &dev_attr->attr;
+	fcn_attr->dev_attr.attr.name = name_cpy;
+	sysfs_attr_init(fcn_attr->dev_attr.attr);
+	return &fcn_attr->dev_attr.attr;
 	
 release_attr:
-	kfree(dev_attr);
+	kfree(fcn_attr);
 	return NULL;	
 }
 
@@ -588,7 +597,8 @@ void dump_group_tree(const struct attribute_group** groups)
       the definition of a new group
       the end pointer when we are done
       null for error */
-const struct attr_info *process_one_attr_group(const struct attr_info *start, 
+const struct attr_info *process_one_attr_group(const struct attr_info *head, 
+					       const struct attr_info *start, 
 					       const struct attr_info * const end,
 					       struct attribute_group * const grp)
 {
@@ -614,7 +624,7 @@ const struct attr_info *process_one_attr_group(const struct attr_info *start,
 	for (i=0; i < size; i++, cur_attr++) {
 	  pr_warn("attr_group: attr name: %s\n", cur_attr->name);
 	  pr_warn("attr_group: attr input: %d\n", cur_attr->input);
-	  grp->attrs[i] = create_attr(cur_attr->name, cur_attr->input == 0);
+	  grp->attrs[i] = create_attr(cur_attr->name, cur_attr->input == 0, cur_attr - head);
 	  if (!grp->attrs[i]) {
 	    pr_err("process_one_attr_group: Failed to create attribute\n");
 	    goto cleanup;
@@ -698,7 +708,7 @@ define_function_attrs(struct smartio_node* node,
 	    dev_err(&node->dev, "Failed allocating a group\n");
 	    goto cleanup;
 	  }
-	  info_current = process_one_attr_group(info_current, info_end, groups[i]);
+	  info_current = process_one_attr_group(info, info_current, info_end, groups[i]);
 	}
 	return groups;
 
