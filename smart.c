@@ -1,6 +1,7 @@
 #include <linux/module.h>
 #include <linux/i2c.h>
 #include "smartio.h"
+#include "smartio_inline.h"
 
 
 static struct i2c_device_id my_idtable[] = {
@@ -20,7 +21,8 @@ MODULE_DEVICE_TABLE(i2c, my_idtable);
 static void fill_reply_buffer(struct smartio_comm_buf* rx,
 			      const struct smartio_comm_buf* tx)
 {
-  rx->data_len = 0;
+  rx->data_len = 1;
+  rx->data[0] = 0;
   //  pr_warn("HAOD: tx header is %x\n", tx->transport_header);
   rx->transport_header = tx->transport_header;
   //pr_warn("HAOD: rx intial header is %x\n", rx->transport_header);
@@ -60,6 +62,7 @@ static int smartio_read_16bit(struct smartio_comm_buf* buf, int ofs)
 
  */
 
+#include "convert.h"
 
 
 struct attr_info {
@@ -67,25 +70,22 @@ struct attr_info {
   uint8_t arraySize;
   enum smartio_io_types type;
   char *name;
-  union {
-    int val;
-    char* str;
-  };
+  union val data;
 };
 
 struct attr_info adc_attrs[] = {
-  { IO_IS_INPUT, 0, IO_STRING, "offset", {.str = "42"} },
-  { IO_IS_OUTPUT, 0, IO_TEMP_C, "temp", {.val = 1000} }
+  { IO_IS_INPUT, 0, IO_ASCII_STRING, "offset", .data.str = "42" },
+  { IO_IS_OUTPUT, 0, IO_PRESSURE_KPA, "pressure", .data.intval = 1000 }
 };
 
 struct attr_info dac_attrs[] = {
-  { IO_IS_INPUT, 0, IO_STRING, "gain", {.str = "large"} },
-  { IO_IS_INPUT | IO_IS_OUTPUT, 0, IO_TEMP_C, "temp", {.val =2000} },
-  { IO_IS_INPUT | IO_IS_DEVICE, 0, IO_TEMP_K, "dev_temp", {.val = 500} }
+  { IO_IS_INPUT, 0, IO_ASCII_STRING, "gain", .data.str = "large" },
+  { IO_IS_INPUT | IO_IS_OUTPUT, 0, IO_ENERGY_WH, "energy", .data.intval =2000 },
+  { IO_IS_INPUT | IO_IS_DEVICE, 0, IO_ENERGY_WH, "dev_energy", .data.intval = 500 }
 };
 
 struct attr_info node_attrs[] = {
-  { IO_IS_INPUT | IO_IS_OUTPUT, 3, IO_INT32, "en", {.val = 1} }
+  { IO_IS_INPUT | IO_IS_OUTPUT, 3, IO_ASCII_CHAR, "en", .data.intval = 1 }
 };
 
 
@@ -115,18 +115,22 @@ static int communicate(struct smartio_node* this,
 {
   int ix = tx->data[0];
   int attr_ix;
+  int array_ix;
+  int len;
   struct attr_info *attr = NULL;
   char* module_name = modules[ix].name;
-  dev_warn(&this->dev, "HAOD: calling communicate() function\n");
+
+  dev_warn(&this->dev, "HAOD: calling communicate() function at %p\n", &communicate);
+  fill_reply_buffer(rx, tx);
+
   switch (tx->data[1]) {
   case SMARTIO_GET_NO_OF_MODULES:
     if (ix != 0) {
       dev_err(&this->dev, "Illegal module index %d\n", ix);
+      rx->data[0] = SMARTIO_ILLEGAL_MODULE_INDEX;
       return -1;
     }
-    fill_reply_buffer(rx, tx);
     rx->data_len = 3 + strlen(module_name) + 1;
-    rx->data[0] = 0;
     smartio_write_16bit(rx, 1, 3);
     strcpy(rx->data + 3, module_name);
     break;
@@ -136,9 +140,6 @@ static int communicate(struct smartio_node* this,
       rx->data[0] = SMARTIO_ILLEGAL_MODULE_INDEX;
       return -1;
     }
-    else
-      rx->data[0] = 0;
-    fill_reply_buffer(rx, tx);
     rx->data_len = 3 + strlen(modules[ix].name) + 1;
     smartio_write_16bit(rx, 1, modules[ix].no_of_attrs);
     strcpy(rx->data + 3, module_name);
@@ -152,18 +153,13 @@ static int communicate(struct smartio_node* this,
       rx->data[0] = SMARTIO_ILLEGAL_MODULE_INDEX;
       return -1;
     }
-    else {
-      attr_ix = smartio_read_16bit(tx, 2);
+    attr_ix = smartio_read_16bit(tx, 2);
 
-      if (!((attr_ix >= 0) && (attr_ix < modules[ix].no_of_attrs))) {
-	rx->data[0] = SMARTIO_ILLEGAL_ATTRIBUTE_INDEX;
-        dev_err(&this->dev, "Illegal attribute index %d\n", attr_ix);
-	return -1;
-      }
-      else
-	rx->data[0] = 0;
+    if (!((attr_ix >= 0) && (attr_ix < modules[ix].no_of_attrs))) {
+      rx->data[0] = SMARTIO_ILLEGAL_ATTRIBUTE_INDEX;
+      dev_err(&this->dev, "Illegal attribute index %d\n", attr_ix);
+      return -1;
     }
-    fill_reply_buffer(rx, tx);
     attr = &modules[ix].attrs[attr_ix];
     rx->data[1] = attr->directions;
     rx->data[2] = attr->arraySize;
@@ -172,6 +168,27 @@ static int communicate(struct smartio_node* this,
     rx->data_len = 4 + strlen(attr->name) + 1;
     break;
   case SMARTIO_GET_ATTR_VALUE:
+    if ((ix < 0) || (ix >= ARRAY_SIZE(modules))) {
+      dev_err(&this->dev, "Illegal module index %d\n", ix);
+      rx->data[0] = SMARTIO_ILLEGAL_MODULE_INDEX;
+      return -1;
+    }
+    attr_ix = smartio_read_16bit(tx, 2);
+    if (!((attr_ix >= 0) && (attr_ix < modules[ix].no_of_attrs))) {
+      rx->data[0] = SMARTIO_ILLEGAL_ATTRIBUTE_INDEX;
+      dev_err(&this->dev, "Illegal attribute index %d\n", attr_ix);
+      return -1;
+    }
+    array_ix = tx->data[4];
+    if (array_ix != 0xFF) {
+      rx->data[0] = SMARTIO_ILLEGAL_ARRAY_INDEX;
+      dev_err(&this->dev, "Illegal array index %d\n", array_ix);
+      return -1;
+    }
+    attr = &modules[ix].attrs[attr_ix];
+    write_val_to_buffer(rx->data+1, &len, attr->type, attr->data);
+    rx->data_len = len + 1;
+    break;
   case SMARTIO_SET_ATTR_VALUE:
   case SMARTIO_GET_STRING:
     dev_err(&this->dev, "HAOD: communicate(): command %d not implemented\n", (int) tx->data[1]);
@@ -187,7 +204,6 @@ static int my_probe(struct i2c_client* client,
   int status;
 
   pr_warn("Probing smart i2c driver\n");
-  pr_warn("Probing smart i2c driver again\n");
 
   //  status = devm_smartio_register_node(&client->dev);
   status = dev_smartio_register_node(&client->dev, "smartio-i2c", communicate);

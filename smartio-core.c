@@ -6,6 +6,10 @@
 #include <linux/idr.h>
 #include <linux/slab.h>
 #include "smartio.h"
+#include "smartio_inline.h"
+#include "convert.h"
+
+
 
 int smartio_match(struct device* dev, struct device_driver* drv)
 {
@@ -71,6 +75,7 @@ static struct class smartio_function_class = {
 struct fcn_attribute {
   struct device_attribute dev_attr;
   int fcn_ix;
+  int type;
 };
 
 // The workqueue used for all smartio work
@@ -82,7 +87,6 @@ struct smartio_work {
   struct smartio_node* node; 
 };
 
-// TBD Add functions to add devices (nodes, functions) and register drivers
 static DEFINE_MUTEX(core_lock);
 static DEFINE_MUTEX(id_lock);
 static DEFINE_IDR(node_idr);
@@ -297,7 +301,7 @@ int smartio_get_no_of_modules(struct smartio_node* node, char *name)
   
   return smartio_read_16bit(buf, 1);
 }
-EXPORT_SYMBOL_GPL(smartio_get_no_of_modules);
+EXPORT_SYMBOL(smartio_get_no_of_modules);
 
 #define SOME_LATER_KERNEL_VERSION
 static int alloc_new_node_number(struct smartio_node *node)
@@ -430,24 +434,172 @@ int smartio_get_attr_info(struct smartio_node* node,
   info->type = buf->data[3];
   strncpy(info->name, buf->data+4, SMARTIO_NAME_SIZE);
   info->name[SMARTIO_NAME_SIZE] = '\0';
-  
+  #if 0
   dev_warn(&node->dev, "Read attribute def\n");
   dev_warn(&node->dev, "buf len: %d\n", buf->data_len);
   dev_warn(&node->dev, "flags: %d\n", buf->data[1]);
   dev_warn(&node->dev, "arr_size: %d\n", buf->data[2]);
   dev_warn(&node->dev, "type: %d\n", buf->data[3]);
   dev_warn(&node->dev, "name: %s\n", info->name);
+#endif
   return 0;
+}
+
+
+int smartio_get_attr_value(struct smartio_node* node, 
+			   int attr,
+			   int arr_ix,
+			   void *data)
+{
+  struct smartio_comm_buf* buf;
+  int status;
+
+  buf = kzalloc(sizeof *buf, GFP_KERNEL);
+  if (!buf) 
+    return -ENOMEM;
+
+  buf->data_len = 5; // module + command + attr ix + array ix
+  buf->data[0] = node->nr;
+  buf->data[1] =  SMARTIO_GET_ATTR_VALUE;
+  smartio_write_16bit(buf, 2, attr);
+  buf->data[4] = arr_ix;
+  status = post_request(node, buf);
+  if (status < 0) {
+    dev_err(&node->dev, "DARN DARN DARN\n");
+    return status;
+  }
+
+  if (buf->data_len <= 2) {
+    dev_err(&node->dev, "get_attr_value: illegal data length %d\n", buf->data_len);
+    return -ENOMEM; // TBD: err to indicate wrong data size
+  }
+  if (buf->data[0] != SMARTIO_SUCCESS) {
+    switch (buf->data[0]) {
+    case SMARTIO_ILLEGAL_MODULE_INDEX:
+      dev_err(&node->dev, "get_attr_value: illegal module index %d\n", node->nr);
+      break;
+    case SMARTIO_ILLEGAL_ATTRIBUTE_INDEX:
+      dev_err(&node->dev, "get_attr_value: illegal attribute index %d\n", attr);
+      break;
+    case SMARTIO_ILLEGAL_ARRAY_INDEX:
+      dev_err(&node->dev, "get_attr_value: illegal array index %d\n", arr_ix);
+      break;
+    default:
+      dev_err(&node->dev, "get_attr_value: unknown msg status %d\n", buf->data[0]);
+      break;
+    }
+    return -ENOMEM; // TBD: err to indicate wrong module index
+  }
+
+  memcpy(data, buf->data + 1, buf->data_len - 1);
+  return 0;
+}
+
+
+
+int smartio_set_attr_value(struct smartio_node* node, 
+			   int attr,
+			   int arr_ix,
+			   void *data,
+			   int len)
+{
+  struct smartio_comm_buf* buf;
+  int status;
+
+  buf = kzalloc(sizeof *buf, GFP_KERNEL);
+  if (!buf) 
+    return -ENOMEM;
+
+  buf->data_len = 5 + len; // module + command + attr ix + array ix
+  buf->data[0] = node->nr;
+  buf->data[1] =  SMARTIO_SET_ATTR_VALUE;
+  smartio_write_16bit(buf, 2, attr);
+  buf->data[4] = arr_ix;
+  memcpy(buf->data + 5, data, len);
+  status = post_request(node, buf);
+  if (status < 0) {
+    dev_err(&node->dev, "%s: request failed. Error %d\n", __func__, status);
+    return status;
+  }
+
+  if (buf->data_len != 1) {
+    dev_err(&node->dev, "%s: illegal data length %d\n", __func__, buf->data_len);
+    return -ENOMEM; // TBD: err to indicate wrong data size
+  }
+  if (buf->data[0] != SMARTIO_SUCCESS) {
+    switch (buf->data[0]) {
+    case SMARTIO_ILLEGAL_MODULE_INDEX:
+      dev_err(&node->dev, "%s: illegal module index %d\n", __func__, node->nr);
+      break;
+    case SMARTIO_ILLEGAL_ATTRIBUTE_INDEX:
+      dev_err(&node->dev, "%s: illegal attribute index %d\n", __func__, attr);
+      break;
+    case SMARTIO_ILLEGAL_ARRAY_INDEX:
+      dev_err(&node->dev, "%s: illegal array index %d\n", __func__, arr_ix);
+      break;
+    case   SMARTIO_NO_PERMISSION:
+      dev_err(&node->dev, "%s: no permission to write attribute %d\n", __func__, arr_ix);
+      break;
+    default:
+      dev_err(&node->dev, "%s: unknown msg status %d\n", __func__, buf->data[0]);
+    }
+    return -ENOMEM; // TBD: err to indicate wrong module index
+  }
+
+  return 0;
+}
+
+// #define FAKE_ATTR_RESULT
+
+
+void dump_node(struct device * dev)
+{
+  	struct smartio_node *node = container_of(dev->parent, struct smartio_node, dev);
+
+	dev_warn(dev, "dumping node %d\n", node->nr);
+	dev_warn(dev, "node communicate fcn: %p\n", node->communicate);
 }
 
 static ssize_t show_fcn_attr(struct device *dev,
 			     struct device_attribute *attr,
 			     char *buf)
 {
+	u8 mybuf[40];
+#ifndef FAKE_ATTR_RESULT
+	int result;
+#endif
+	struct smartio_node *node = container_of(dev->parent, struct smartio_node, dev);
 	struct fcn_attribute* fcn_attr = container_of(attr, struct fcn_attribute, dev_attr);
-	dev_warn(dev, "Calling show fcn for attr %s, no %d\n", 
-		 attr->attr.name, fcn_attr->fcn_ix);
-	return scnprintf(buf, PAGE_SIZE, "%d\n", 5);
+	dev_warn(dev, "Calling show fcn for node %d, attr %s, ix %d, type %d\n", 
+		 node->nr, attr->attr.name, fcn_attr->fcn_ix, fcn_attr->type);
+	dev_warn(dev, "Node callback is %p\n", node->communicate); 
+	dump_node(dev);
+	dev_warn(dev, "dev ptr: %p, parent ptr: %p, node ptr: %p\n", dev, dev->parent, node);
+	dev_warn(dev, "parent name: %s\n", dev_name(dev->parent));
+#ifndef FAKE_ATTR_RESULT
+	result = smartio_get_attr_value(node, 
+					fcn_attr->fcn_ix,
+					0xFF, /* No arrays for now */
+					mybuf);
+#else
+	switch (fcn_attr->type) {
+	case 33:
+	  mybuf[0] = 'h';
+	  mybuf[1] = 'e';
+	  mybuf[2] = 'l';
+	  mybuf[3] = 'l';
+	  mybuf[4] = 'o';
+	  mybuf[5] = '\n';
+	  mybuf[6] = '\0';
+	  break;
+	default:
+	mybuf[0] = 133;
+	mybuf[1] = 64;
+	break;
+	}
+#endif
+	smartio_raw_to_string(fcn_attr->type, mybuf, buf);
+	return strlen(buf);
 }
 
 static ssize_t store_fcn_attr(struct device *dev,
@@ -455,19 +607,21 @@ static ssize_t store_fcn_attr(struct device *dev,
 			      const char *buf,
 			      size_t count)
 {
-	char mybuf[20];
+	char rawbuf[40];
+	int raw_len;
 	struct fcn_attribute* fcn_attr = container_of(attr, struct fcn_attribute, dev_attr);
-	
-	snprintf(mybuf, (int) min(count, sizeof mybuf - 1), "%s", buf);
-	dev_warn(dev, "Calling store fcn for attr %s\n, ix %d,  value: %s", 
+	struct smartio_node *node;
+
+	node = container_of(dev, struct smartio_node, dev);
+       	dev_warn(dev, "Calling store fcn for attr %s\n, ix %d,  value: %s", 
 		 attr->attr.name,
 		 fcn_attr->fcn_ix,
-		 mybuf);
-	return count;
-}
+		 buf);
 
-			    
-EXPORT_SYMBOL_GPL(smartio_get_function_info);
+	smartio_string_to_raw(fcn_attr->fcn_ix, buf, rawbuf, &raw_len);
+	return count;
+}			    
+EXPORT_SYMBOL(smartio_get_function_info);
 
 /* All attributes have to be allocated dynamically, as we do not
    know in advance which attributes there are. This is a bit
@@ -476,8 +630,13 @@ EXPORT_SYMBOL_GPL(smartio_get_function_info);
    To define a set of attributes in their own directory, just
    create an additional attribute group with a name (which will
    be the name of the directory). */
-static struct attribute *create_attr(const char *name, bool readonly, int fcn_number)
+static struct attribute *create_attr(const struct attr_info *cur_attr,
+				     const struct attr_info *head)
 {
+  const char* name = cur_attr->name;
+  bool readonly = cur_attr->input == 0;
+  int fcn_number = cur_attr - head;
+  int type = cur_attr->type;
 	char* name_cpy;
 	struct fcn_attribute *fcn_attr = kzalloc(sizeof *fcn_attr, GFP_KERNEL);
 	
@@ -489,6 +648,7 @@ static struct attribute *create_attr(const char *name, bool readonly, int fcn_nu
 	fcn_attr->dev_attr.attr.mode = readonly ? 0444 : 0644;
 	fcn_attr->dev_attr.show = show_fcn_attr;
 	fcn_attr->fcn_ix = fcn_number;
+	fcn_attr->type = type;
 	name_cpy = kmalloc(strlen(name)+1, GFP_KERNEL);
 	if (!name_cpy)
 		goto release_attr;
@@ -606,9 +766,11 @@ const struct attr_info *process_one_attr_group(const struct attr_info *head,
 	int i;
 	int size = 0;
 
+#if 0
 	pr_warn("attr_group: start = %p\n", start);
 	pr_warn("attr_group: end = %p\n", end);
 	pr_warn("attr_group: grp = %p\n", grp);
+#endif
 	if (cur_attr->isDir) {
 	  	grp->name = kmalloc(strlen(cur_attr->name) + 1, GFP_KERNEL);
 		if (!grp->name) {
@@ -619,12 +781,17 @@ const struct attr_info *process_one_attr_group(const struct attr_info *head,
 		cur_attr++;
 	}
 	size = get_no_of_attrs_in_group(cur_attr, end);
+#if 0
 	pr_warn("attr_group: size = %d\n", size);
+#endif
 	grp->attrs = kzalloc((sizeof grp->attrs) * (size + 1), GFP_KERNEL);
 	for (i=0; i < size; i++, cur_attr++) {
+#if 0
 	  pr_warn("attr_group: attr name: %s\n", cur_attr->name);
 	  pr_warn("attr_group: attr input: %d\n", cur_attr->input);
-	  grp->attrs[i] = create_attr(cur_attr->name, cur_attr->input == 0, cur_attr - head);
+	  pr_warn("attr_group: attr type: %d\n", cur_attr->type);
+#endif
+	  grp->attrs[i] = create_attr(cur_attr, head);
 	  if (!grp->attrs[i]) {
 	    pr_err("process_one_attr_group: Failed to create attribute\n");
 	    goto cleanup;
@@ -815,9 +982,9 @@ static int create_function_device(struct smartio_node *node,
 				"Could not define function attrs\n");
 			goto release_memory;
 		}
-
-		dump_group_tree(function_dev->groups);
 #if 0
+		dump_group_tree(function_dev->groups);
+
 		function_dev->groups = NULL;
 #endif
 		status = device_register(function_dev);
@@ -890,8 +1057,10 @@ static int smartio_register_node(struct device *dev, struct smartio_node *node, 
 
 	for (i=1; i < no_of_modules; i++) {
 		status = create_function_device(node, i);
-		if (!status) 
-			goto done;
+		if (status) {
+		  dev_err(dev, "Failed creating function %d of %d\n", i, no_of_modules);
+		  goto done;
+		}
 	}
 	return 0;
 
@@ -966,7 +1135,7 @@ int devm_smartio_register_node(struct device *dev)
   return ret;
   
 }
-EXPORT_SYMBOL_GPL(devm_smartio_register_node);
+EXPORT_SYMBOL(devm_smartio_register_node);
 #endif
 
 int dev_smartio_register_node(struct device *dev, 
@@ -986,12 +1155,13 @@ int dev_smartio_register_node(struct device *dev,
   dev_warn(dev, "HAOD: allocated node mem\n");
 
   node->communicate = cb;
+  dev_warn(dev, "Node communicate ptr: %p", node->communicate);
   ret = smartio_register_node(dev, node, name);
   if (ret) {
-    dev_warn(dev, "HAOD: smartio_register_node failed\n");
+    dev_warn(dev, "HAOD: dev_smartio_register_node failed\n");
     goto reclaim_node_memory;
   }
-  dev_warn(dev, "HAOD: smartio_register_node successful\n");
+  dev_warn(dev, "HAOD: dev_smartio_register_node successful\n");
 
 
   return ret;
@@ -1062,6 +1232,8 @@ static void __exit my_cleanup(void)
   pr_warn("Removed smartio bus driver\n");
 }
 module_exit(my_cleanup);
+
+
 
 
 MODULE_AUTHOR("Hans Odeberg <hans.odeberg@intel.com>");
