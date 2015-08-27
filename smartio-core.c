@@ -10,6 +10,11 @@
 #include "convert.h"
 
 
+struct fcn_dev {
+  int function_ix;
+  struct device dev;
+};
+
 
 int smartio_match(struct device* dev, struct device_driver* drv)
 {
@@ -74,7 +79,7 @@ static struct class smartio_function_class = {
 
 struct fcn_attribute {
   struct device_attribute dev_attr;
-  int fcn_ix;
+  int attr_ix;
   int type;
 };
 
@@ -348,10 +353,10 @@ static struct class smartio_node_class = {
 };
 
 
-int smartio_get_function_info(struct smartio_node* node, 
-			      int module,
-			      int *no_of_attrs,
-			      char *name)
+static int smartio_get_function_info(struct smartio_node* node, 
+				     int module,
+				     int *no_of_attrs,
+				     char *name)
 {
   struct smartio_comm_buf* buf;
   int status;
@@ -446,10 +451,11 @@ int smartio_get_attr_info(struct smartio_node* node,
 }
 
 
-int smartio_get_attr_value(struct smartio_node* node, 
-			   int attr,
-			   int arr_ix,
-			   void *data)
+static int smartio_get_attr_value(struct smartio_node* node, 
+				  int function,
+				  int attr,
+				  int arr_ix,
+				  void *data)
 {
   struct smartio_comm_buf* buf;
   int status;
@@ -459,7 +465,7 @@ int smartio_get_attr_value(struct smartio_node* node,
     return -ENOMEM;
 
   buf->data_len = 5; // module + command + attr ix + array ix
-  buf->data[0] = node->nr;
+  buf->data[0] = function;
   buf->data[1] =  SMARTIO_GET_ATTR_VALUE;
   smartio_write_16bit(buf, 2, attr);
   buf->data[4] = arr_ix;
@@ -495,9 +501,8 @@ int smartio_get_attr_value(struct smartio_node* node,
   return 0;
 }
 
-
-
 int smartio_set_attr_value(struct smartio_node* node, 
+			   int function,
 			   int attr,
 			   int arr_ix,
 			   void *data,
@@ -511,7 +516,7 @@ int smartio_set_attr_value(struct smartio_node* node,
     return -ENOMEM;
 
   buf->data_len = 5 + len; // module + command + attr ix + array ix
-  buf->data[0] = node->nr;
+  buf->data[0] = function;
   buf->data[1] =  SMARTIO_SET_ATTR_VALUE;
   smartio_write_16bit(buf, 2, attr);
   buf->data[4] = arr_ix;
@@ -565,13 +570,17 @@ static ssize_t show_fcn_attr(struct device *dev,
 	u8 mybuf[40];
 	int result;
 	struct smartio_node *node = container_of(dev->parent, struct smartio_node, dev);
+	struct fcn_dev *fcn = container_of(dev, struct fcn_dev, dev);
 	struct fcn_attribute* fcn_attr = container_of(attr, struct fcn_attribute, dev_attr);
-	dev_info(dev, "Calling show fcn for node %d, attr %s, ix %d, type %d\n", 
-		 node->nr, attr->attr.name, fcn_attr->fcn_ix, fcn_attr->type);
+
+	dev_info(dev, "Calling show fcn for node %d, fcn ix %d, attr %s, ix %d, type %d\n", 
+		 node->nr, fcn->function_ix, attr->attr.name, 
+                 fcn_attr->attr_ix, fcn_attr->type);
 	dump_node(dev);
 
 	result = smartio_get_attr_value(node, 
-					fcn_attr->fcn_ix,
+					fcn->function_ix,
+					fcn_attr->attr_ix,
 					0xFF, /* No arrays for now */
 					mybuf);
 	smartio_raw_to_string(fcn_attr->type, mybuf, buf);
@@ -585,19 +594,27 @@ static ssize_t store_fcn_attr(struct device *dev,
 {
 	char rawbuf[40];
 	int raw_len;
+	struct smartio_node *node = container_of(dev->parent, struct smartio_node, dev);
+	struct fcn_dev *fcn = container_of(dev, struct fcn_dev, dev);
 	struct fcn_attribute* fcn_attr = container_of(attr, struct fcn_attribute, dev_attr);
-	struct smartio_node *node;
 
-	node = container_of(dev, struct smartio_node, dev);
-       	dev_warn(dev, "Calling store fcn for attr %s\n, ix %d,  value: %s", 
+       	dev_info(dev, "Calling store fcn for node %d, fcn %d, attr %s\n, ix %d,  value: %s\n", 
+		 node->nr,
+		 fcn->function_ix,
 		 attr->attr.name,
-		 fcn_attr->fcn_ix,
+		 fcn_attr->attr_ix,
 		 buf);
-
-	smartio_string_to_raw(fcn_attr->fcn_ix, buf, rawbuf, &raw_len);
+	smartio_string_to_raw(fcn_attr->type, buf, rawbuf, &raw_len);
+	dev_info(dev, "rawbuf: %s, len: %d\n", rawbuf, raw_len);
+	smartio_set_attr_value(node,
+			       fcn->function_ix,
+			       fcn_attr->attr_ix,
+			       0xFF, /* No arrays for now */
+			       rawbuf,
+			       raw_len);
 	return count;
 }			    
-EXPORT_SYMBOL(smartio_get_function_info);
+
 
 /* All attributes have to be allocated dynamically, as we do not
    know in advance which attributes there are. This is a bit
@@ -623,7 +640,7 @@ static struct attribute *create_attr(const struct attr_info *cur_attr,
 	  fcn_attr->dev_attr.store = store_fcn_attr;
 	fcn_attr->dev_attr.attr.mode = readonly ? 0444 : 0644;
 	fcn_attr->dev_attr.show = show_fcn_attr;
-	fcn_attr->fcn_ix = fcn_number;
+	fcn_attr->attr_ix = fcn_number;
 	fcn_attr->type = type;
 	name_cpy = kmalloc(strlen(name)+1, GFP_KERNEL);
 	if (!name_cpy)
@@ -922,7 +939,7 @@ static int create_function_device(struct smartio_node *node,
 	char function_name[SMARTIO_NAME_SIZE+1];
 	int no_of_attributes;
 	int status;
-	struct device* function_dev = NULL;
+	struct fcn_dev* function_dev = NULL;
 	
 	status = smartio_get_function_info(node, function_ix,
 					   &no_of_attributes,
@@ -939,31 +956,33 @@ static int create_function_device(struct smartio_node *node,
 			status = -1;
 			goto done;
 		}
+		function_dev->function_ix = function_ix;
 		dev_warn(&node->dev, "Function name is %s\n", function_name);
+		dev_warn(&node->dev, "Function ix is %d\n", function_ix);
 		dev_warn(&node->dev, "Function has %d attributes\n",
 			 no_of_attributes);
 
-		function_dev->parent = &node->dev;
-		dev_set_name(function_dev, function_name);
-		function_dev->bus = &smartio_bus;
-		function_dev->id = 0;
-		//      function_dev->class = &smartio_function_class;
-		function_dev->release = function_release;
-		function_dev->groups = (const struct attribute_group**)
+		function_dev->dev.parent = &node->dev;
+		dev_set_name(&function_dev->dev, function_name);
+		function_dev->dev.bus = &smartio_bus;
+		function_dev->dev.id = 0;
+		//      function_dev->dev.class = &smartio_function_class;
+		function_dev->dev.release = function_release;
+		function_dev->dev.groups = (const struct attribute_group**)
 		  define_function_attrs(node, 
 					function_ix,
 					no_of_attributes);
-		if (!function_dev->groups) {
+		if (!function_dev->dev.groups) {
 			dev_err(&node->dev,
 				"Could not define function attrs\n");
 			goto release_memory;
 		}
 #if 0
-		dump_group_tree(function_dev->groups);
+		dump_group_tree(function_dev->dev.groups);
 
-		function_dev->groups = NULL;
+		function_dev->dev.groups = NULL;
 #endif
-		status = device_register(function_dev);
+		status = device_register(&function_dev->dev);
 		if (status < 0) {
 			dev_err(&node->dev, 
 				"Failed to add function device %s\n",
@@ -979,12 +998,12 @@ static int create_function_device(struct smartio_node *node,
 	goto done;
 	
 release_dev:
-	if (function_dev->groups) {
-	  free_groups((struct attribute_group**) function_dev->groups);
-	  kfree(function_dev->groups);
-	  function_dev->groups = NULL;
+	if (function_dev->dev.groups) {
+	  free_groups((struct attribute_group**) function_dev->dev.groups);
+	  kfree(function_dev->dev.groups);
+	  function_dev->dev.groups = NULL;
 	}
-	put_device(function_dev);
+	put_device(&function_dev->dev);
 release_memory:
 	kfree(function_dev);
 done:

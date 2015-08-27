@@ -73,13 +73,17 @@ struct attr_info {
   union val data;
 };
 
+
+char str1[30] = "42";
+char str2[30] = "large";
+
 struct attr_info adc_attrs[] = {
-  { IO_IS_INPUT, 0, IO_ASCII_STRING, "offset", .data.str = "42" },
+  { IO_IS_INPUT, 0, IO_ASCII_STRING, "offset", .data.str = str1 },
   { IO_IS_OUTPUT, 0, IO_PRESSURE_KPA, "pressure", .data.intval = 1000 }
 };
 
 struct attr_info dac_attrs[] = {
-  { IO_IS_INPUT, 0, IO_ASCII_STRING, "gain", .data.str = "large" },
+  { IO_IS_INPUT, 0, IO_ASCII_STRING, "gain", .data.str = str2 },
   { IO_IS_INPUT | IO_IS_OUTPUT, 0, IO_ENERGY_WH, "energy", .data.intval =2000 },
   { IO_IS_INPUT | IO_IS_DEVICE, 0, IO_ENERGY_WH, "dev_energy", .data.intval = 500 }
 };
@@ -107,6 +111,19 @@ struct reply {
 };
 
 struct reply deferred_reply;
+
+
+static void write_val_to_attr(const void* indata, struct attr_info* attr)
+{
+  pr_info("attr name: %s, attr type: %d\n", attr->name, attr->type);
+  if (attr->type == IO_ASCII_STRING) {
+    pr_info("storing string: %s\n", (char *) indata);
+    strcpy(attr->data.str, indata);
+  }
+  else {
+    attr->data.intval = smartio_buf2value(attr->type, indata);
+  }
+}
 
 
 static int communicate(struct smartio_node* this, 
@@ -190,6 +207,27 @@ static int communicate(struct smartio_node* this,
     rx->data_len = len + 1;
     break;
   case SMARTIO_SET_ATTR_VALUE:
+    if ((ix < 0) || (ix >= ARRAY_SIZE(modules))) {
+      dev_err(&this->dev, "Illegal module index %d\n", ix);
+      rx->data[0] = SMARTIO_ILLEGAL_MODULE_INDEX;
+      return -1;
+    }
+    attr_ix = smartio_read_16bit(tx, 2);
+    if (!((attr_ix >= 0) && (attr_ix < modules[ix].no_of_attrs))) {
+      rx->data[0] = SMARTIO_ILLEGAL_ATTRIBUTE_INDEX;
+      dev_err(&this->dev, "Illegal attribute index %d\n", attr_ix);
+      return -1;
+    }
+    array_ix = tx->data[4];
+    if (array_ix != 0xFF) {
+      rx->data[0] = SMARTIO_ILLEGAL_ARRAY_INDEX;
+      dev_err(&this->dev, "Illegal array index %d\n", array_ix);
+      return -1;
+    }
+    attr = &modules[ix].attrs[attr_ix];
+    write_val_to_attr(tx->data+5, attr);
+    rx->data_len = 1;
+    break;
   case SMARTIO_GET_STRING:
     dev_err(&this->dev, "HAOD: communicate(): command %d not implemented\n", (int) tx->data[1]);
     break;
@@ -197,6 +235,7 @@ static int communicate(struct smartio_node* this,
   print_hex_dump_bytes("Comm:", DUMP_PREFIX_OFFSET, rx->data, rx->data_len);
   return 0;
 } 
+
 
 static int my_probe(struct i2c_client* client,
 		    const struct i2c_device_id *id)

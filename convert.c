@@ -81,9 +81,10 @@ const struct scaled_int variables[] = {
 
 
 
-static int buf2value(int no_of_bytes, u8* raw_value)
+int smartio_buf2value(int ix, const u8* raw_value)
 {
   unsigned int r = raw_value[0];
+  int no_of_bytes = variables[ix].no_of_bytes;
   int i;
 
   pr_warn("%s: raw value 1 is %u\n", __func__, r);
@@ -100,6 +101,7 @@ static int buf2value(int no_of_bytes, u8* raw_value)
     
   return r;
 }
+EXPORT_SYMBOL_GPL(smartio_buf2value);
 
 
 static void int2buf(u8* raw, int v, int bytes)
@@ -130,7 +132,7 @@ void smartio_raw_to_string(int ix, void* raw_value, char *result)
   switch (ix) {
   case IO_LEVEL_PERCENT:
     /* Multiplier of 0.5 needs special handling */
-    v = buf2value(2, raw_value);
+    v = smartio_buf2value(ix, raw_value);
     sprintf(result, "%d %s\n", v / 2, def->unit);
     break;
   case IO_ASCII_STRING:
@@ -139,7 +141,7 @@ void smartio_raw_to_string(int ix, void* raw_value, char *result)
     strcat(result, "\n");
     break;    
   default:
-    v = buf2value(def->no_of_bytes, raw_value);
+    v = smartio_buf2value(ix, raw_value);
     pr_warn("%s: raw value is %d\n", __func__, v);
     v -= def->offset;
     pr_warn("%s: removing offset %d results in %d\n", __func__, (int) def->offset, v);
