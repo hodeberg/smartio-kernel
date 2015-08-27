@@ -126,6 +126,7 @@ void smartio_raw_to_string(int ix, void* raw_value, char *result)
   const struct scaled_int * const def = &variables[ix];
   int v;
 
+  pr_info("Converting index %d\n", ix);
   switch (ix) {
   case IO_LEVEL_PERCENT:
     /* Multiplier of 0.5 needs special handling */
@@ -250,7 +251,7 @@ void smartio_string_to_raw(int ix, const char* str, char *raw, int *raw_len)
 void write_val_to_buffer(char *buf, int *len, int type, union val value)
 {
   if (type == IO_ASCII_STRING) {
-    *len = strlen(value.str);
+    *len = strlen(value.str) + 1;  /* Send null byte too */
     strcpy(buf, value.str);
   }
   else {

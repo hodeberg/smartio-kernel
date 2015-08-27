@@ -549,15 +549,13 @@ int smartio_set_attr_value(struct smartio_node* node,
   return 0;
 }
 
-// #define FAKE_ATTR_RESULT
 
-
-void dump_node(struct device * dev)
+static void dump_node(struct device * dev)
 {
   	struct smartio_node *node = container_of(dev->parent, struct smartio_node, dev);
 
-	dev_warn(dev, "dumping node %d\n", node->nr);
-	dev_warn(dev, "node communicate fcn: %p\n", node->communicate);
+	dev_info(dev, "dumping node %d\n", node->nr);
+	dev_info(dev, "node communicate fcn: %p\n", node->communicate);
 }
 
 static ssize_t show_fcn_attr(struct device *dev,
@@ -565,39 +563,17 @@ static ssize_t show_fcn_attr(struct device *dev,
 			     char *buf)
 {
 	u8 mybuf[40];
-#ifndef FAKE_ATTR_RESULT
 	int result;
-#endif
 	struct smartio_node *node = container_of(dev->parent, struct smartio_node, dev);
 	struct fcn_attribute* fcn_attr = container_of(attr, struct fcn_attribute, dev_attr);
-	dev_warn(dev, "Calling show fcn for node %d, attr %s, ix %d, type %d\n", 
+	dev_info(dev, "Calling show fcn for node %d, attr %s, ix %d, type %d\n", 
 		 node->nr, attr->attr.name, fcn_attr->fcn_ix, fcn_attr->type);
-	dev_warn(dev, "Node callback is %p\n", node->communicate); 
 	dump_node(dev);
-	dev_warn(dev, "dev ptr: %p, parent ptr: %p, node ptr: %p\n", dev, dev->parent, node);
-	dev_warn(dev, "parent name: %s\n", dev_name(dev->parent));
-#ifndef FAKE_ATTR_RESULT
+
 	result = smartio_get_attr_value(node, 
 					fcn_attr->fcn_ix,
 					0xFF, /* No arrays for now */
 					mybuf);
-#else
-	switch (fcn_attr->type) {
-	case 33:
-	  mybuf[0] = 'h';
-	  mybuf[1] = 'e';
-	  mybuf[2] = 'l';
-	  mybuf[3] = 'l';
-	  mybuf[4] = 'o';
-	  mybuf[5] = '\n';
-	  mybuf[6] = '\0';
-	  break;
-	default:
-	mybuf[0] = 133;
-	mybuf[1] = 64;
-	break;
-	}
-#endif
 	smartio_raw_to_string(fcn_attr->type, mybuf, buf);
 	return strlen(buf);
 }
