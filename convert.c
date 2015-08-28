@@ -31,6 +31,7 @@ http://www.lonmark.org/technical_resources/resource_files/snvt.pdf
 #include <linux/types.h>
 #include <linux/string.h>
 #include <linux/kernel.h>
+#include <linux/ctype.h>
 #include "smartio.h"
 #include "convert.h"
 
@@ -206,15 +207,10 @@ void smartio_string_to_raw(int ix, const char* str, char *raw, int *raw_len)
   int v;
   u8 v8;
   int result;
-  int i;
   char buf[30];
-  int dot_scaling;
-  int total_scaling;
+  int i;
 
   strcpy(buf, str);
-  dot_pos = strchr(str, '.');
-  dot_scaling = dot_pos ? strlen(str) - (dot_pos-str) - 1 : 0;
-  total_scaling = def->scale_power - dot_scaling;
 
   switch (ix) {
   case IO_LEVEL_PERCENT:
@@ -231,18 +227,24 @@ void smartio_string_to_raw(int ix, const char* str, char *raw, int *raw_len)
     break;    
   default:
     if (dot_pos) {
-      strcpy(buf+(dot_pos-str), dot_pos+1);
+      for (i=0; i < def->scale_power; i++) {
+	buf[dot_pos-str+i] = dot_pos[i+1];
+	if (dot_pos[i+1] == '\0') break;
+      }
+      for ( ; i < def->scale_power; i++)
+	buf[dot_pos-str+i] = '0';
+      buf[dot_pos-str+i] = '\0';
+    }
+    else {
+      char *end = &buf[strlen(buf)-1];
+
+      while (!isdigit(*end)) {
+	*end-- = '\0';
+      }
+      for (i=0; i < def->scale_power; i++)
+	strcat(buf, "0");
     }
     result = kstrtoint(buf, 10, &v);
-
-    if (total_scaling > 0) {      
-      for (i = 0; i < total_scaling; i++)
-	v *= 10;
-    }
-    else if (total_scaling < 0) {
-      for (i = 0; i < -total_scaling; i++)
-	v /= 10;
-    }
     int2buf(raw, v, def->no_of_bytes);
     *raw_len = def->no_of_bytes;
     break;
