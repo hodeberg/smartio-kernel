@@ -8,7 +8,7 @@
 #include "smartio.h"
 #include "smartio_inline.h"
 #include "convert.h"
-
+#include "txbuf_list.h"
 
 static void free_groups(struct attribute_group** groups);
 
@@ -40,13 +40,13 @@ static int my_probe(struct device* dev)
 {
   int status = 0;
 
-  dev_info("Bus probe for function  driver\n");
+  dev_info(dev, "Bus probe for function  driver\n");
   return status; 
 }
 
 static int my_remove(struct device* dev)
 {
-  dev_info("Bus remove for function driver\n");
+  dev_info(dev, "Bus remove for function driver\n");
   return 0;
 }
 
@@ -91,88 +91,30 @@ struct smartio_work {
   struct smartio_node* node; 
 };
 
-static DEFINE_MUTEX(core_lock);
+
 static DEFINE_MUTEX(id_lock);
 static DEFINE_IDR(node_idr);
-static LIST_HEAD(transactions);
 static DECLARE_WAIT_QUEUE_HEAD(wait_queue);
 
-#define TRANS_ID_BITS (1  << SMARTIO_TRANS_ID_SIZE)
-DECLARE_BITMAP(transId, 1 << TRANS_ID_BITS);
-
-static int getTransId(void)
-{
-  int newId;
-
-  mutex_lock(&id_lock);
-  newId = find_first_zero_bit(transId, TRANS_ID_BITS);
-
-  if (newId == TRANS_ID_BITS)
-  {
-    // No free IDs
-    newId = -1;
-    goto cleanup;
-  }
-  set_bit(newId, transId);
- 
- cleanup:
-  mutex_unlock(&id_lock);
-  return newId;
-}
-
-static int releaseTransId(int id)
-{
-  int status = id;
-
-  mutex_lock(&id_lock);
-
-  if (!test_and_clear_bit(id, transId)) {
-    // This transaction ID was not claimed.
-    status = -1;
-  }
-
-  mutex_unlock(&id_lock);
-  return status;
-}
 
 
-static void handle_response(struct device* dev, struct smartio_comm_buf *resp)
+static void handle_response(struct smartio_comm_buf *resp)
 {
   struct smartio_comm_buf *req;
-  struct smartio_comm_buf *next;
-  dev_warn(dev, "Entering handle_response\n");
-  mutex_lock(&core_lock);
-  dev_warn(dev, "Mutex is locked\n");
 
-  if (list_empty(&transactions)) {
-    dev_err(dev, "No transactions in list!\n");
-    return;
-  }
+  pr_info("Entering handle_response\n");
 
-  list_for_each_entry_safe(req, next, &transactions, list) {
-    dev_warn(dev, "Found an item in the transaction queue\n");
-    dev_warn(dev, "Type: %d\n", smartio_get_msg_type(req));
-    if (smartio_get_msg_type(req) == SMARTIO_REQUEST) {
-      int reqId = smartio_get_transaction_id(req);
-      int respId = smartio_get_transaction_id(resp);
+  req = smartio_find_transaction(smartio_get_transaction_id(resp));
 
-      dev_warn(dev, "Found a response in the transaction queue\n");
-      if (reqId == respId) {
-	dev_warn(dev, "Matching transaction ID %d\n", respId);
-	list_del(&req->list);
-        releaseTransId(respId);
+  if (req) {
 	req->data_len = resp->data_len;
 	memcpy(req->data, resp->data, resp->data_len);
-	dev_warn(dev, "Copied %d bytes from resp to req\n", req->data_len);
+	pr_info("Copied %d bytes from resp to req\n", req->data_len);
+	/* Swapping the direction tells waiter it needs to sleep
+           no more. */
 	smartio_set_direction(req, SMARTIO_FROM_NODE);
 	wake_up_interruptible(&wait_queue);
-	break;
-      }
-      else
-	dev_warn(dev, "Transaction ID mismatch. Resp: %d, Req: %d\n", respId, reqId);
-    }
   }
-  mutex_unlock(&core_lock);
 }
 
 static int talk_to_node(struct smartio_node *node, 
@@ -189,7 +131,7 @@ static int talk_to_node(struct smartio_node *node,
     switch (msg_type) {
     case SMARTIO_RESPONSE:
       dev_err(&node->dev, "Got a response message\n");
-      handle_response(&node->dev, &rx);
+      handle_response(&rx);
       break;
     case SMARTIO_REQUEST:
     case SMARTIO_ACKNOWLEDGED:
@@ -210,9 +152,7 @@ static void wq_fcn_post_message(struct work_struct *w)
   struct smartio_work *my_work = container_of(w, struct smartio_work, work);
 
   pr_warn("HAOD: request work function\n");
-  mutex_lock(&core_lock);
-  list_add_tail(&my_work->comm_buf->list, &transactions);
-  mutex_unlock(&core_lock);
+  smartio_add_transaction(my_work->comm_buf);
   talk_to_node(my_work->node, my_work->comm_buf);
   kfree(my_work);
 }
@@ -236,7 +176,6 @@ static int post_request(struct smartio_node* node,
   // Set the transaction header
   smartio_set_msg_type(buf, SMARTIO_REQUEST);
   smartio_set_direction(buf, SMARTIO_TO_NODE);
-  smartio_set_transaction_id(buf, getTransId());
 
   // Post deferred work
   my_work = kmalloc(sizeof *my_work, GFP_KERNEL);
@@ -312,9 +251,13 @@ static int alloc_new_node_number(struct smartio_node *node)
   int id;
 
 #ifdef SOME_LATER_KERNEL_VERSION
+#if 0
   mutex_lock(&core_lock);
+#endif
   id = idr_alloc(&node_idr, node, 1, 0, GFP_KERNEL);
+#if 0
   mutex_unlock(&core_lock);
+#endif
 #else
   int result = -EAGAIN;
   
@@ -1012,6 +955,10 @@ done:
 }
 
 
+/*
+  dev: the hardware device (i2c, spi, ...)
+  node: the function bus controller device
+*/
 static int smartio_register_node(struct device *dev, struct smartio_node *node, char *name)
 {
 	int status = -1;
