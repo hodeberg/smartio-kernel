@@ -10,6 +10,8 @@
 #include "convert.h"
 
 
+static void free_groups(struct attribute_group** groups);
+
 struct fcn_dev {
   int function_ix;
   struct device dev;
@@ -38,28 +40,25 @@ static int my_probe(struct device* dev)
 {
   int status = 0;
 
-  pr_warn("Bus probe for function  driver %s\n", dev_name(dev));
+  dev_info("Bus probe for function  driver\n");
   return status; 
 }
 
 static int my_remove(struct device* dev)
 {
-  pr_warn("Bus remove for function driver\n");
+  dev_info("Bus remove for function driver\n");
   return 0;
 }
 
 static void function_release(struct device* dev)
 {
-	struct smartio_device *fcn;
+	struct fcn_dev *fcn;
 
 	dev_warn(dev, "Smartio function release called\n");	
-	fcn = container_of(dev, struct smartio_device, dev);
-	/* Resource counting: parent and child should reference
-	   each other. Thus, we want to decrement the parent's
-	   count on the child, and the child's count on the
-	   parent. Q: what of this does the device framework
-	   do? */
-	kfree(dev);
+	fcn = container_of(dev, struct fcn_dev, dev);
+	free_groups((struct attribute_group**) dev->groups);
+	kfree(dev->groups);
+	kfree(fcn);
 }
 
 static struct  bus_type smartio_bus = {
@@ -95,7 +94,6 @@ struct smartio_work {
 static DEFINE_MUTEX(core_lock);
 static DEFINE_MUTEX(id_lock);
 static DEFINE_IDR(node_idr);
-static LIST_HEAD(smartio_node_list);
 static LIST_HEAD(transactions);
 static DECLARE_WAIT_QUEUE_HEAD(wait_queue);
 
@@ -336,14 +334,17 @@ static int alloc_new_node_number(struct smartio_node *node)
 
 static void smartio_node_release(struct device *dev)
 {
-#if 0
+#if 1
   struct smartio_node *node;
 
   node = container_of(dev, struct smartio_node, dev);
 #endif
   dev_warn(dev, "Releasing smartio node\n");
-  /* Consider reference counting of i2c vs node pointers */
+#if 1
+  kfree(node);
+#else
   kfree(dev);
+#endif
 }
 
 static struct class smartio_node_class = {
@@ -709,7 +710,7 @@ void free_group(struct attribute_group *grp)
 }
 
 
-void free_groups(struct attribute_group** groups)
+static void free_groups(struct attribute_group** groups)
 {
 	while (*groups) {
 	  pr_warn("Free: group\n");
@@ -1045,9 +1046,6 @@ static int smartio_register_node(struct device *dev, struct smartio_node *node, 
 	}
 	dev_warn(dev, "HAOD: Registered master %s\n", dev_name(&node->dev));
 
-	mutex_lock(&core_lock);
-	list_add_tail(&node->list, &smartio_node_list);
-	mutex_unlock(&core_lock);
 	dev_set_drvdata(dev, node);
 
 	for (i=1; i < no_of_modules; i++) {
@@ -1065,30 +1063,24 @@ done:
 
 static int dev_unregister_function(struct device* dev, void* null)
 {
-	struct smartio_device *function;
-	
 	dev_warn(dev, "Unregistering function %s\n", dev_name(dev));
-	function = container_of(dev, struct smartio_device, dev); 
 	device_unregister(dev);
-	free_groups((struct attribute_group**) dev->groups);
-	kfree(dev->groups);
 	return 0;
 }
 
-void smartio_unregister_node(struct device *dev)
+/* dev points to function bus controller device */
+int smartio_unregister_node(struct device *dev, void* null)
 {
-	struct smartio_node *node = dev_get_drvdata(dev);
 	int status;
 
-	dev_warn(dev, "Unregistering node %s\n", dev_name(&node->dev));
-	mutex_lock(&core_lock);
-	list_del(&node->list);
-	mutex_unlock(&core_lock);
-	
-	status = device_for_each_child(&node->dev, NULL, dev_unregister_function);
+	dev_warn(dev, "Unregistering function bus controller node\n");
+	dev_warn(dev, "First step: Unregistering child functions\n");
+	status = device_for_each_child(dev, NULL, dev_unregister_function);
 
-	device_unregister(&node->dev);
+	dev_warn(dev, "2nd step: Unregistering node itself\n");
+	device_unregister(dev);
 	pr_warn("HAOD: Unregistering done.\n");
+	return status;
 }
 EXPORT_SYMBOL_GPL(smartio_unregister_node);
 

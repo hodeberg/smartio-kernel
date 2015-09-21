@@ -12,26 +12,10 @@ struct smartio_device_id {
 };
 // End of what to put in mod_devicetable.h
 
-// Initial dummy wrapper, just in case we would want to add
-// additional device-specific data.
-struct smartio_device {
-  struct device dev;
-};
-
-
 
 struct smartio_comm_buf;
 
 struct smartio_function_driver {
-	/* Standard driver model interfaces */
-	int (*probe)(struct smartio_device *, const struct smartio_device_id *);
-	int (*remove)(struct smartio_device *);
-
-	/* driver model interfaces that don't relate to enumeration  */
-	void (*shutdown)(struct smartio_device *);
-	int (*suspend)(struct smartio_device *, pm_message_t mesg);
-	int (*resume)(struct smartio_device *);
-
 	struct device_driver driver;
 	const struct smartio_device_id *id_table;
 };
@@ -42,7 +26,6 @@ void smartio_del_driver(struct smartio_function_driver* sd);
 
 struct smartio_node {
   struct device dev;
-  struct list_head list;
   int nr; // Instance number
   // Send a message, and receive one.
   // tx may be null, in which case the remote node is polled.
@@ -60,8 +43,8 @@ int dev_smartio_register_node(struct device *dev,
 			      int (*communicate)(struct smartio_node* this, 
 						 struct smartio_comm_buf* tx,
 						 struct smartio_comm_buf* rx));
-/* dev: the encapsulating hardware device (i2c, spi, etc...) */
-void smartio_unregister_node(struct device *dev);
+/* dev: the function bus controller to unregister */
+int smartio_unregister_node(struct device *dev, void* null);
 
 #define SMARTIO_HEADER_SIZE (1 + 1)
 #define SMARTIO_DATA_SIZE 30

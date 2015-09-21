@@ -253,8 +253,10 @@ static int my_probe(struct i2c_client* client,
 
 static int my_remove(struct i2c_client* client)
 {
+  int status;
+
   pr_warn("Removing smart i2c driver\n");
-  smartio_unregister_node(&client->dev);
+  status = device_for_each_child(&client->dev, NULL, smartio_unregister_node);
   return 0;
 }
 
