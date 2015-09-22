@@ -173,3 +173,4 @@ int smartio_get_direction(struct smartio_comm_buf* buf);
 void smartio_set_transaction_id(struct smartio_comm_buf* buf, int d);
 int smartio_get_transaction_id(struct smartio_comm_buf* buf);
 
+extern struct bus_type smartio_bus;

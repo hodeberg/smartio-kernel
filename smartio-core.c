@@ -17,56 +17,73 @@ struct fcn_dev {
   struct device dev;
 };
 
+static void smartio_node_release(struct device *dev)
+{
+#if 1
+  struct smartio_node *node;
+
+  node = container_of(dev, struct smartio_node, dev);
+#endif
+  dev_warn(dev, "Releasing smartio node\n");
+#if 1
+  kfree(node);
+#else
+  kfree(dev);
+#endif
+}
+
+#if 0
+static struct class smartio_node_class = {
+  .name = "smartio_node",
+  .owner = THIS_MODULE,
+  //  .dev_release = smartio_node_release
+};
+
+
+static struct device_type function_devt = {
+  .name = "smartio_function",
+};
+#endif
+
+static struct device_type controller_devt = {
+  .name = "smartio_controller",
+  .release = smartio_node_release
+};
 
 int smartio_match(struct device* dev, struct device_driver* drv)
 {
   struct smartio_function_driver* driver = container_of(drv, struct smartio_function_driver, driver);
   const struct smartio_device_id* drv_id;
 
-  dev_warn(dev, "Matching this dev to %s\n", drv->name);  
+  dev_info(dev, "Matching device %s to driver %s\n", dev_name(dev), drv->name);  
   for(drv_id = driver->id_table; drv_id->name != NULL; drv_id++) {
-    if (!strcmp(dev_name(dev), drv_id->name)) {
-      dev_warn(dev, "Match of %s succeeded\n", drv_id->name);
+    if (!strncmp(dev_name(dev), drv_id->name, strlen(drv_id->name))) {
+      dev_info(dev, "Match of %s succeeded\n", drv_id->name);
       return 1;
     }
     else {
-      dev_warn(dev, "No match for %s\n", drv_id->name);
+      dev_info(dev, "No match for %s\n", drv_id->name);
     }
   }
   return 0;
 }
 
-static int my_probe(struct device* dev)
-{
-  int status = 0;
-
-  dev_info(dev, "Bus probe for function  driver\n");
-  return status; 
-}
-
-static int my_remove(struct device* dev)
-{
-  dev_info(dev, "Bus remove for function driver\n");
-  return 0;
-}
 
 static void function_release(struct device* dev)
 {
 	struct fcn_dev *fcn;
 
-	dev_warn(dev, "Smartio function release called\n");	
+	dev_info(dev, "Smartio function release called\n");	
 	fcn = container_of(dev, struct fcn_dev, dev);
 	free_groups((struct attribute_group**) dev->groups);
 	kfree(dev->groups);
 	kfree(fcn);
 }
 
-static struct  bus_type smartio_bus = {
+struct  bus_type smartio_bus = {
   .name = "smartio",
-  .dev_name = "function",
+  .dev_name = "smartio_bus_master",
   .match = smartio_match,
-  .probe = my_probe,
-  .remove = my_remove,
 };
 
 static struct class smartio_function_class = {
@@ -246,7 +263,7 @@ int smartio_get_no_of_modules(struct smartio_node* node, char *name)
 EXPORT_SYMBOL(smartio_get_no_of_modules);
 
 #define SOME_LATER_KERNEL_VERSION
-static int alloc_new_node_number(struct smartio_node *node)
+static int alloc_new_node_number(void *node)
 {
   int id;
 
@@ -275,26 +292,6 @@ static int alloc_new_node_number(struct smartio_node *node)
   return id;
 }
 
-static void smartio_node_release(struct device *dev)
-{
-#if 1
-  struct smartio_node *node;
-
-  node = container_of(dev, struct smartio_node, dev);
-#endif
-  dev_warn(dev, "Releasing smartio node\n");
-#if 1
-  kfree(node);
-#else
-  kfree(dev);
-#endif
-}
-
-static struct class smartio_node_class = {
-  .name = "smartio_node",
-  .owner = THIS_MODULE,
-  .dev_release = smartio_node_release
-};
 
 
 static int smartio_get_function_info(struct smartio_node* node, 
@@ -959,53 +956,32 @@ done:
   dev: the hardware device (i2c, spi, ...)
   node: the function bus controller device
 */
+#define USE_TYPE
 static int smartio_register_node(struct device *dev, struct smartio_node *node, char *name)
 {
 	int status = -1;
-	int no_of_modules;
-	int i;
-	char node_name[SMARTIO_NAME_SIZE+1];
 
 	dev_warn(dev, "HAOD: entering register_node\n");
 	device_initialize(&node->dev);
 	node->dev.parent = dev;
-	node->dev.class = &smartio_node_class;
-	node->nr = alloc_new_node_number(node);
-	dev_warn(dev, "HAOD: allocated node number %d\n", node->nr);
+	node->dev.bus = &smartio_bus;
+	node->dev.type = &controller_devt;
+	node->nr = node->dev.id = alloc_new_node_number(&controller_devt);
+	dev_info(dev, "HAOD: allocated node number %d\n", node->nr);
 	if (node->nr < 0)
 		return node->nr;
-	// TBD: Use name of parent device as base!!!
-	dev_warn(dev, "HAOD: parent dev name is %s\n", dev_name(dev));
-	no_of_modules = smartio_get_no_of_modules(node, node_name);
-	dev_warn(dev, "HAOD: Node has %d modules\n", no_of_modules);
-	dev_warn(dev, "HAOD: Node name is %s\n", node_name);
-	if (no_of_modules < 0)
-		goto done;
-	dev_set_name(&node->dev, "%s-%d", node_name, node->nr);
-	dev_warn(dev, "HAOD: set node name %s\n", dev_name(&node->dev));
 
+	dev_set_drvdata(dev, node);
 	status = device_add(&node->dev);
-	pr_warn("HAOD: added node %s\n", dev_name(&node->dev));
+	dev_info(dev, "HAOD: added node %s\n", dev_name(&node->dev));
 	if (status < 0) {
 		dev_err(dev, "HAOD: failed to add node device\n");
 		put_device(&node->dev);
 		return status;
 	}
-	dev_warn(dev, "HAOD: Registered master %s\n", dev_name(&node->dev));
+	dev_info(dev, "HAOD: Registered master %s\n", dev_name(&node->dev));
 
-	dev_set_drvdata(dev, node);
-
-	for (i=1; i < no_of_modules; i++) {
-		status = create_function_device(node, i);
-		if (status) {
-		  dev_err(dev, "Failed creating function %d of %d\n", i, no_of_modules);
-		  goto done;
-		}
-	}
 	return 0;
-
-done:
-	return status;
 }
 
 static int dev_unregister_function(struct device* dev, void* null)
@@ -1089,7 +1065,6 @@ int dev_smartio_register_node(struct device *dev,
   dev_warn(dev, "HAOD: allocated node mem\n");
 
   node->communicate = cb;
-  dev_warn(dev, "Node communicate ptr: %p", node->communicate);
   ret = smartio_register_node(dev, node, name);
   if (ret) {
     dev_warn(dev, "HAOD: dev_smartio_register_node failed\n");
@@ -1108,7 +1083,6 @@ EXPORT_SYMBOL_GPL(dev_smartio_register_node);
 
 int smartio_add_driver(struct smartio_function_driver* sd)
 {
-  sd->driver.owner = THIS_MODULE;
   sd->driver.bus = &smartio_bus;
   return driver_register(&sd->driver);
 }
@@ -1121,6 +1095,61 @@ void smartio_del_driver(struct smartio_function_driver* sd)
 EXPORT_SYMBOL_GPL(smartio_del_driver);
 
 
+
+static int fcn_ctrl_probe(struct device* dev)
+{
+  int status = 0;
+  int no_of_modules = 0;
+  char node_name[30];
+  int i;
+  struct smartio_node *node;  
+
+  node = container_of(dev, struct smartio_node, dev);
+  dev_info(dev, "Bus probe for function bus controller driver\n");
+  dev_info(dev, "HAOD: parent dev name is %s\n", dev_name(dev->parent));
+  no_of_modules = smartio_get_no_of_modules(node, node_name);
+  dev_info(dev, "HAOD: Node has %d modules\n", no_of_modules);
+  dev_info(dev, "HAOD: Name read from device is %s\n", node_name);
+
+  if (no_of_modules < 0)
+    return -EINVAL;
+
+  for (i=1; i < no_of_modules; i++) {
+    status = create_function_device(node, i);
+    if (status) {
+      dev_err(dev, "Failed creating function %d of %d\n", i, no_of_modules);
+      return status;
+    }
+  }
+
+  return status;
+}
+
+static int fcn_ctrl_remove(struct device* dev)
+{
+  dev_info(dev, "Bus remove for function bus controller driver\n");
+  return 0;
+}
+
+
+static const struct smartio_device_id fcn_ctrl_table[] = {
+  { "smartio_bus_master" },
+  { NULL }
+};
+
+static struct smartio_function_driver fcn_ctrl_driver = {
+  .driver = {
+    .name = "smartio_bus_controller",
+    .owner = THIS_MODULE,
+    .bus = &smartio_bus,
+    .probe = fcn_ctrl_probe,
+    .remove = fcn_ctrl_remove,
+  },
+  .id_table = fcn_ctrl_table,
+};
+
+
+
 static int __init my_init(void)
 {
   if (bus_register(&smartio_bus) < 0) {
@@ -1128,30 +1157,40 @@ static int __init my_init(void)
     goto fail_bus_register;
   }
 
+#if 0
   if (class_register(&smartio_node_class) < 0) {
     pr_err("smartio: Failed to register node class\n");
     goto fail_node_class_register;
   }
-
+#endif
   if (class_register(&smartio_function_class) < 0) {
     pr_err("smartio: Failed to register function class\n");
     goto fail_function_class_register;
   }
-
 
   work_queue = alloc_workqueue(smartio_bus.name, WQ_UNBOUND, 1);
   if (work_queue == NULL) {
     pr_err("smartio: Failed to create workqueue\n");
     goto fail_workqueue;
   }
-  pr_warn("smartio: Done registering  bus driver\n");
+
+  if (driver_register(&fcn_ctrl_driver.driver) < 0) {
+    pr_err("smartio: Failed to register function bus controller driver\n");
+    goto fail_bus_driver;
+  }
+
+  pr_info("smartio: Done registering  bus driver\n");
   return 0;
 
+ fail_bus_driver:
+  destroy_workqueue(work_queue);
 fail_workqueue:
   class_unregister(&smartio_function_class);
 fail_function_class_register:
+#if 0
   class_unregister(&smartio_node_class);
 fail_node_class_register:
+#endif
   bus_unregister(&smartio_bus);
 fail_bus_register:
   return -1;
@@ -1160,8 +1199,12 @@ module_init(my_init);
 
 static void __exit my_cleanup(void)
 {
+  driver_unregister(&fcn_ctrl_driver.driver);
+  destroy_workqueue(work_queue);
   class_unregister(&smartio_function_class);
+#if 0
   class_unregister(&smartio_node_class);
+#endif
   bus_unregister(&smartio_bus);
   pr_warn("Removed smartio bus driver\n");
 }

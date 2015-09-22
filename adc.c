@@ -13,9 +13,27 @@ MODULE_DEVICE_TABLE(smartio, my_idtable);
 
 
 
+static int probe(struct device* dev)
+{
+  int status = 0;
+
+  dev_info(dev, "ADC probe\n");
+  return status; 
+}
+
+static int remove(struct device* dev)
+{
+  dev_info(dev, "ADC remove\n");
+  return 0;
+}
+
+
 static struct smartio_function_driver my_driver = {
   .driver = {
     .name = "smartio_adc",
+    .owner = THIS_MODULE,
+    .probe = probe,
+    .remove = remove,
   },
   .id_table = my_idtable,
 };
