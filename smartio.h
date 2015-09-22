@@ -26,7 +26,6 @@ void smartio_del_driver(struct smartio_function_driver* sd);
 
 struct smartio_node {
   struct device dev;
-  int nr; // Instance number
   // Send a message, and receive one.
   // tx may be null, in which case the remote node is polled.
   // rx may be empty, if remote node returned no data.

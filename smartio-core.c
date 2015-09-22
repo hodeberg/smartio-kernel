@@ -423,7 +423,7 @@ static int smartio_get_attr_value(struct smartio_node* node,
   if (buf->data[0] != SMARTIO_SUCCESS) {
     switch (buf->data[0]) {
     case SMARTIO_ILLEGAL_MODULE_INDEX:
-      dev_err(&node->dev, "get_attr_value: illegal module index %d\n", node->nr);
+      dev_err(&node->dev, "get_attr_value: illegal module index %d\n", node->dev.id);
       break;
     case SMARTIO_ILLEGAL_ATTRIBUTE_INDEX:
       dev_err(&node->dev, "get_attr_value: illegal attribute index %d\n", attr);
@@ -475,7 +475,7 @@ int smartio_set_attr_value(struct smartio_node* node,
   if (buf->data[0] != SMARTIO_SUCCESS) {
     switch (buf->data[0]) {
     case SMARTIO_ILLEGAL_MODULE_INDEX:
-      dev_err(&node->dev, "%s: illegal module index %d\n", __func__, node->nr);
+      dev_err(&node->dev, "%s: illegal module index %d\n", __func__, node->dev.id);
       break;
     case SMARTIO_ILLEGAL_ATTRIBUTE_INDEX:
       dev_err(&node->dev, "%s: illegal attribute index %d\n", __func__, attr);
@@ -500,7 +500,7 @@ static void dump_node(struct device * dev)
 {
   	struct smartio_node *node = container_of(dev->parent, struct smartio_node, dev);
 
-	dev_info(dev, "dumping node %d\n", node->nr);
+	dev_info(dev, "dumping node %d\n", dev->id);
 	dev_info(dev, "node communicate fcn: %p\n", node->communicate);
 }
 
@@ -515,7 +515,7 @@ static ssize_t show_fcn_attr(struct device *dev,
 	struct fcn_attribute* fcn_attr = container_of(attr, struct fcn_attribute, dev_attr);
 
 	dev_info(dev, "Calling show fcn for node %d, fcn ix %d, attr %s, ix %d, type %d\n", 
-		 node->nr, fcn->function_ix, attr->attr.name, 
+		 dev->parent->id, fcn->function_ix, attr->attr.name, 
                  fcn_attr->attr_ix, fcn_attr->type);
 	dump_node(dev);
 
@@ -540,7 +540,7 @@ static ssize_t store_fcn_attr(struct device *dev,
 	struct fcn_attribute* fcn_attr = container_of(attr, struct fcn_attribute, dev_attr);
 
        	dev_info(dev, "Calling store fcn for node %d, fcn %d, attr %s\n, ix %d,  value: %s\n", 
-		 node->nr,
+		 dev->parent->id,
 		 fcn->function_ix,
 		 attr->attr.name,
 		 fcn_attr->attr_ix,
@@ -966,10 +966,10 @@ static int smartio_register_node(struct device *dev, struct smartio_node *node, 
 	node->dev.parent = dev;
 	node->dev.bus = &smartio_bus;
 	node->dev.type = &controller_devt;
-	node->nr = node->dev.id = alloc_new_node_number(&controller_devt);
-	dev_info(dev, "HAOD: allocated node number %d\n", node->nr);
-	if (node->nr < 0)
-		return node->nr;
+	node->dev.id = alloc_new_node_number(&controller_devt);
+	dev_info(dev, "HAOD: allocated node number %d\n", node->dev.id);
+	if (node->dev.id < 0)
+		return node->dev.id;
 
 	dev_set_drvdata(dev, node);
 	status = device_add(&node->dev);
