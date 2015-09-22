@@ -15,14 +15,14 @@ struct smartio_device_id {
 
 struct smartio_comm_buf;
 
-struct smartio_function_driver {
+struct smartio_driver {
 	struct device_driver driver;
 	const struct smartio_device_id *id_table;
 };
-#define to_smartio_function_driver(d) container_of(d, struct smartio_function_driver, driver)
+#define to_smartio_driver(d) container_of(d, struct smartio_driver, driver)
 
-int smartio_add_driver(struct smartio_function_driver* sd);
-void smartio_del_driver(struct smartio_function_driver* sd);
+int smartio_add_driver(struct smartio_driver* sd);
+void smartio_del_driver(struct smartio_driver* sd);
 
 struct smartio_node {
   struct device dev;

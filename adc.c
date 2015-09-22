@@ -28,7 +28,7 @@ static int remove(struct device* dev)
 }
 
 
-static struct smartio_function_driver my_driver = {
+static struct smartio_driver my_driver = {
   .driver = {
     .name = "smartio_adc",
     .owner = THIS_MODULE,

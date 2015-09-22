@@ -52,7 +52,7 @@ static struct device_type controller_devt = {
 
 int smartio_match(struct device* dev, struct device_driver* drv)
 {
-  struct smartio_function_driver* driver = container_of(drv, struct smartio_function_driver, driver);
+  struct smartio_driver* driver = to_smartio_driver(drv);
   const struct smartio_device_id* drv_id;
 
   dev_info(dev, "Matching device %s to driver %s\n", dev_name(dev), drv->name);  
@@ -1081,14 +1081,14 @@ reclaim_node_memory:
 EXPORT_SYMBOL_GPL(dev_smartio_register_node);
 
 
-int smartio_add_driver(struct smartio_function_driver* sd)
+int smartio_add_driver(struct smartio_driver* sd)
 {
   sd->driver.bus = &smartio_bus;
   return driver_register(&sd->driver);
 }
 EXPORT_SYMBOL_GPL(smartio_add_driver);
 
-void smartio_del_driver(struct smartio_function_driver* sd)
+void smartio_del_driver(struct smartio_driver* sd)
 {
   driver_unregister(&sd->driver);
 }
@@ -1137,7 +1137,7 @@ static const struct smartio_device_id fcn_ctrl_table[] = {
   { NULL }
 };
 
-static struct smartio_function_driver fcn_ctrl_driver = {
+static struct smartio_driver fcn_ctrl_driver = {
   .driver = {
     .name = "smartio_bus_controller",
     .owner = THIS_MODULE,
