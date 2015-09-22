@@ -991,19 +991,14 @@ static int dev_unregister_function(struct device* dev, void* null)
 	return 0;
 }
 
+
 /* dev points to function bus controller device */
 int smartio_unregister_node(struct device *dev, void* null)
 {
-	int status;
-
 	dev_warn(dev, "Unregistering function bus controller node\n");
-	dev_warn(dev, "First step: Unregistering child functions\n");
-	status = device_for_each_child(dev, NULL, dev_unregister_function);
-
-	dev_warn(dev, "2nd step: Unregistering node itself\n");
 	device_unregister(dev);
 	pr_warn("HAOD: Unregistering done.\n");
-	return status;
+	return 0;
 }
 EXPORT_SYMBOL_GPL(smartio_unregister_node);
 
@@ -1127,8 +1122,14 @@ static int fcn_ctrl_probe(struct device* dev)
 
 static int fcn_ctrl_remove(struct device* dev)
 {
+  int status;
+
   dev_info(dev, "Bus remove for function bus controller driver\n");
-  return 0;
+  dev_info(dev, "About to unregister child functions\n");
+  status =  device_for_each_child(dev, NULL, dev_unregister_function);
+  dev_info(dev, "Done unregistering child functions\n");
+
+  return status;
 }
 
 
