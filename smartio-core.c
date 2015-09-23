@@ -109,7 +109,6 @@ struct smartio_work {
 };
 
 
-static DEFINE_MUTEX(id_lock);
 static DEFINE_IDR(node_idr);
 static DECLARE_WAIT_QUEUE_HEAD(wait_queue);
 
@@ -1169,7 +1168,7 @@ static int __init my_init(void)
     goto fail_function_class_register;
   }
 
-  work_queue = alloc_workqueue(smartio_bus.name, WQ_UNBOUND, 1);
+  work_queue = create_singlethread_workqueue(smartio_bus.name);
   if (work_queue == NULL) {
     pr_err("smartio: Failed to create workqueue\n");
     goto fail_workqueue;

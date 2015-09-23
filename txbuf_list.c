@@ -2,7 +2,7 @@
 #include "txbuf_list.h"
 
 #define TRANS_ID_BITS (1  << SMARTIO_TRANS_ID_SIZE)
-static DECLARE_BITMAP(transId, 1 << TRANS_ID_BITS);
+static DECLARE_BITMAP(transId, TRANS_ID_BITS);
 static DEFINE_MUTEX(tx_lock);
 static LIST_HEAD(transactions);
 
@@ -39,13 +39,17 @@ static int releaseTransId(int id)
 }
 
 
-
-void smartio_add_transaction(struct smartio_comm_buf *comm_buf)
+/* TBD: add checking for id claim success */
+int smartio_add_transaction(struct smartio_comm_buf *comm_buf)
 {
+  int id;
+
   mutex_lock(&tx_lock);
-  smartio_set_transaction_id(comm_buf, getTransId());
+  id = getTransId();
+  smartio_set_transaction_id(comm_buf, id);
   list_add_tail(&comm_buf->list, &transactions);
   mutex_unlock(&tx_lock);
+  return 0;
 }
 
 
