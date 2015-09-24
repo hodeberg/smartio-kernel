@@ -5,10 +5,18 @@
 
 #include <linux/idr.h>
 #include <linux/slab.h>
+#include <linux/kdev_t.h>
+#include <linux/fs.h>
+
 #include "smartio.h"
 #include "smartio_inline.h"
 #include "convert.h"
 #include "txbuf_list.h"
+#include "minor_id.h"
+
+/* Char device major number */
+static int major;
+
 
 static void free_groups(struct attribute_group** groups);
 
@@ -599,7 +607,7 @@ release_attr:
 
 /* Read the number of groups. Note that there always is at least
    one group; the default one. */
-int get_no_of_groups(struct attr_info* info, int size)
+static int get_no_of_groups(struct attr_info* info, int size)
 {
   int i;
   int count = 1;
@@ -610,12 +618,24 @@ int get_no_of_groups(struct attr_info* info, int size)
   return count;
 }
 
-int get_no_of_attrs_in_group(const struct attr_info *attr, const struct attr_info * const end)
+static int get_no_of_attrs_in_group(const struct attr_info *attr, const struct attr_info * const end)
 {
 	int count = 0;
 
 	while ((attr != end) && (!attr->isDir)) {
-	  count++;
+	  if (!attr->device) count++;
+	  attr++;
+	}
+
+	return count;
+}
+
+static int get_no_of_devs_in_group(const struct attr_info *attr, const struct attr_info * const end)
+{
+	int count = 0;
+
+	while ((attr != end) && (!attr->isDir)) {
+	  if (attr->device) count++;
 	  attr++;
 	}
 
@@ -623,7 +643,7 @@ int get_no_of_attrs_in_group(const struct attr_info *attr, const struct attr_inf
 }
 
 
-void free_group(struct attribute_group *grp)
+static void free_group(struct attribute_group *grp)
 {
 	if (grp->attrs) {
 		struct attribute** attr;
@@ -658,9 +678,9 @@ static void free_groups(struct attribute_group** groups)
 	}
 }
 
-
+#if 0
 /* Debugging function to ensure we created the right structure */
-void dump_group_tree(const struct attribute_group** groups)
+static void dump_group_tree(const struct attribute_group** groups)
 {
   int g;
   
@@ -682,7 +702,7 @@ void dump_group_tree(const struct attribute_group** groups)
 
   }
 }
-
+#endif
 
 /* Create attributes for one group. If start is not a directory definition,
    then this is the default group.
@@ -693,19 +713,16 @@ void dump_group_tree(const struct attribute_group** groups)
 const struct attr_info *process_one_attr_group(const struct attr_info *head, 
 					       const struct attr_info *start, 
 					       const struct attr_info * const end,
-					       struct attribute_group * const grp)
+					       struct attribute_group * const grp,
+					       const struct attr_info **dev_attr)
 {
 	const struct attr_info *cur_attr = start;
 	int i;
 	int size = 0;
+	int no_of_devs = 0;
 
-#if 0
-	pr_warn("attr_group: start = %p\n", start);
-	pr_warn("attr_group: end = %p\n", end);
-	pr_warn("attr_group: grp = %p\n", grp);
-#endif
 	if (cur_attr->isDir) {
-	  	grp->name = kmalloc(strlen(cur_attr->name) + 1, GFP_KERNEL);
+	  	grp->name = kstrdup(cur_attr->name, GFP_KERNEL);
 		if (!grp->name) {
 			pr_err("Failed to allocate attribute name %s\n", cur_attr->name);
 			return NULL;
@@ -714,20 +731,18 @@ const struct attr_info *process_one_attr_group(const struct attr_info *head,
 		cur_attr++;
 	}
 	size = get_no_of_attrs_in_group(cur_attr, end);
-#if 0
-	pr_warn("attr_group: size = %d\n", size);
-#endif
+	no_of_devs = get_no_of_devs_in_group(cur_attr, end);
 	grp->attrs = kzalloc((sizeof grp->attrs) * (size + 1), GFP_KERNEL);
-	for (i=0; i < size; i++, cur_attr++) {
-#if 0
-	  pr_warn("attr_group: attr name: %s\n", cur_attr->name);
-	  pr_warn("attr_group: attr input: %d\n", cur_attr->input);
-	  pr_warn("attr_group: attr type: %d\n", cur_attr->type);
-#endif
-	  grp->attrs[i] = create_attr(cur_attr, head);
-	  if (!grp->attrs[i]) {
-	    pr_err("process_one_attr_group: Failed to create attribute\n");
-	    goto cleanup;
+	for (i=0; (cur_attr < end) && !cur_attr->isDir; i++, cur_attr++) {
+	  if (cur_attr->device && (*dev_attr == NULL)) {
+	    *dev_attr = cur_attr;
+	  }
+	  else {
+	    grp->attrs[i] = create_attr(cur_attr, head);
+	    if (!grp->attrs[i]) {
+	      pr_err("process_one_attr_group: Failed to create attribute\n");
+	      goto cleanup;
+	    }
 	  }
 	}
 	return cur_attr;
@@ -754,41 +769,35 @@ Current limitations:
   Device nodes not handled.
   Attribute arrays not handled. 
 */
-static struct attribute_group** 
+static void
 define_function_attrs(struct smartio_node* node,
+		      struct fcn_dev *function_dev,
 		      int module,
 		      int no_of_attributes)
 {
-#if 0
-	struct attribute **attrs_a;
-	struct attribute **attrs_b;
-	struct attribute_group *grp1;
-	struct attribute_group *grp2;
-	char* grp_name;
-#endif
-	struct attribute_group **groups = NULL;
 	struct attr_info info[no_of_attributes];
 	const struct attr_info * const info_end = info + no_of_attributes;
 	const struct attr_info *info_current = info;
 	int i;
 	int no_of_groups;	
+	struct attribute_group **groups = NULL;
 
-	dev_warn(&node->dev, "define_function_attrs: entry\n");
-	dev_warn(&node->dev, "define_function_attrs: attrs to process: %d\n", no_of_attributes);
+	dev_info(&node->dev, "define_function_attrs: entry\n");
+	dev_info(&node->dev, "define_function_attrs: attrs to process: %d\n", no_of_attributes);
 	for (i=0; i < no_of_attributes; i++) {
 	  int res;
 
-	  dev_warn(&node->dev, "processing attr ix: %d\n", i);
+	  dev_info(&node->dev, "processing attr ix: %d\n", i);
 	  res = smartio_get_attr_info(node, module, i, &info[i]);
 
 	  if (res != 0) {
 	    dev_err(&node->dev, "Failed reading attribute #%d\n", i);
-	    return NULL;
+	    return;
 	  }
 	}
 
 	no_of_groups = get_no_of_groups(info, no_of_attributes);
-        dev_warn(&node->dev, "No of groups are: %d\n", no_of_groups);
+        dev_info(&node->dev, "No of groups are: %d\n", no_of_groups);
 
 	/* Allocate array for group pointers and ending null pointer */
 	groups = kzalloc((sizeof *groups) * (no_of_groups+1), GFP_KERNEL);
@@ -797,8 +806,10 @@ define_function_attrs(struct smartio_node* node,
 	  goto fail_alloc_groups;
 	}
 
-	dev_warn(&node->dev, "define_function_attrs: beginning to create groups\n");
+	dev_info(&node->dev, "define_function_attrs: beginning to create groups\n");
 	for (i=0; i < no_of_groups; i++) {
+	  const struct attr_info *dev_attr = NULL;
+
 	  if (!info_current) {
 	    dev_err(&node->dev, "Failed parsing group\n");
 	    goto cleanup;
@@ -808,36 +819,21 @@ define_function_attrs(struct smartio_node* node,
 	    dev_err(&node->dev, "Failed allocating a group\n");
 	    goto cleanup;
 	  }
-	  info_current = process_one_attr_group(info, info_current, info_end, groups[i]);
+	  info_current = process_one_attr_group(info, info_current, info_end, 
+						groups[i], &dev_attr);
+	  if (dev_attr) {
+	    function_dev->dev.devt = MKDEV(major, get_minor_number());
+	    dev_attr = NULL;
+	  }
 	}
-	return groups;
+	function_dev->dev.groups = (const struct attribute_group**) groups;
+	return;
 
-
-#if 0
-	/* Ignoring failure for now, this is not the real code */
-	attrs_a = kzalloc((sizeof *attrs_a)*3, GFP_KERNEL);
-	attrs_a[0] = create_attr("attr1", true);
-	attrs_a[1] = create_attr("attr2", false);
-	grp1 = kzalloc(sizeof *grp1, GFP_KERNEL);
-	grp1->attrs = attrs_a;
-	attrs_b = kzalloc((sizeof *attrs_b)*3, GFP_KERNEL);
-	attrs_b[0] = create_attr("attr3", true);
-	attrs_b[1] = create_attr("attr4", false);
-	grp2 = kzalloc(sizeof *grp2, GFP_KERNEL);
-	grp2->attrs = attrs_b;
-	grp_name = kmalloc(strlen("subattrs")+1, GFP_KERNEL);
-	strcpy(grp_name, "subattrs");
-	grp2->name = grp_name;
-	groups = kzalloc((sizeof *groups)*3, GFP_KERNEL);
-	groups[0] = grp1;
-	groups[1] = grp2;
-#endif
  cleanup:
 	free_groups(groups);
 	kfree(groups);
-	groups = NULL;
  fail_alloc_groups:
-	return groups;
+	return;
 }
 
 #if 0
@@ -854,21 +850,21 @@ static void free_attributes(struct device* dev)
 				struct attribute *a = *attr;
 				struct device_attribute* d;
 				
-				pr_warn("Free: attr name %s\n", a->name);
+				pr_info("Free: attr name %s\n", a->name);
 				kfree(a->name);
 				d = container_of(a, struct device_attribute, attr);
-				pr_warn("Free: attribute\n");
+				pr_info("Free: attribute\n");
 				kfree(d);
 			}
-			pr_warn("Free: group attrs\n");
+			pr_info("Free: group attrs\n");
 			kfree((*group)->attrs);
 		}
-		pr_warn("Free: group name %s\n", (*group)->name);
+		pr_info("Free: group name %s\n", (*group)->name);
 		kfree((*group)->name);
-		pr_warn("Free: group attrs\n");
+		pr_info("Free: group attrs\n");
 		kfree(*group);
 	}
-	pr_warn("Free: groups\n");
+	pr_info("Free: groups\n");
 	kfree(dev->groups);
 }
 #endif
@@ -908,10 +904,10 @@ static int create_function_device(struct smartio_node *node,
 		function_dev->dev.id = 0;
 		//      function_dev->dev.class = &smartio_function_class;
 		function_dev->dev.release = function_release;
-		function_dev->dev.groups = (const struct attribute_group**)
-		  define_function_attrs(node, 
-					function_ix,
-					no_of_attributes);
+		define_function_attrs(node, 
+				      function_dev,
+				      function_ix,
+				      no_of_attributes);
 		if (!function_dev->dev.groups) {
 			dev_err(&node->dev,
 				"Could not define function attrs\n");
@@ -929,6 +925,10 @@ static int create_function_device(struct smartio_node *node,
 				function_name);
 			goto release_dev;
 		}
+		dev_info(&function_dev->dev, "MAJOR = %d, MINOR = %d\n", 
+			 MAJOR(function_dev->dev.devt), 
+			 MINOR(function_dev->dev.devt));
+
 	}
 	else {
 		dev_err(&node->dev,
@@ -938,12 +938,8 @@ static int create_function_device(struct smartio_node *node,
 	goto done;
 	
 release_dev:
-	if (function_dev->dev.groups) {
-	  free_groups((struct attribute_group**) function_dev->dev.groups);
-	  kfree(function_dev->dev.groups);
-	  function_dev->dev.groups = NULL;
-	}
 	put_device(&function_dev->dev);
+	return status;
 release_memory:
 	kfree(function_dev);
 done:
@@ -985,9 +981,15 @@ static int smartio_register_node(struct device *dev, struct smartio_node *node, 
 
 static int dev_unregister_function(struct device* dev, void* null)
 {
-	dev_warn(dev, "Unregistering function %s\n", dev_name(dev));
-	device_unregister(dev);
-	return 0;
+  dev_t devt;
+
+  dev_warn(dev, "Unregistering function %s\n", dev_name(dev));
+  /* Read the major/minor number now, just in case the struct device
+     is freed, alloced and overwritten by somebody else before
+     we can access it after unregistering. */
+  devt = dev->devt;
+  device_unregister(dev);
+  return MAJOR(devt) ? release_minor_number(MINOR(devt)) : 0;
 }
 
 
@@ -1075,6 +1077,47 @@ reclaim_node_memory:
 EXPORT_SYMBOL_GPL(dev_smartio_register_node);
 
 
+static int dev_open(struct inode *i, struct file *filep)
+{
+  pr_info("HAOD: %s called for minor %d!\n", __func__, iminor(i));
+  return 0;
+}
+
+static int dev_release(struct inode *i, struct file *filep)
+{
+  pr_info("HAOD: %s called for minor %d!\n", __func__, iminor(i));
+  return 0;
+}
+
+
+static const char readbuf[] = "Testing reading\n";
+static char writebuf[50];
+
+static ssize_t dev_read(struct file *filep, char *buf, size_t count, loff_t *ppos)
+{
+  pr_info("HAOD: %s called!\n", __func__);
+  pr_info("len: %d, ofs: %d", (int) count, (int) *ppos);
+
+  return simple_read_from_buffer(buf, count, ppos, readbuf, strlen(readbuf));
+}
+
+static ssize_t dev_write(struct file *filep, const char *buf, 
+			 size_t count, loff_t *ppos)
+{
+  pr_info("HAOD: %s called!\n", __func__);
+  pr_info("len: %d, ofs: %d", (int) count, (int) *ppos);
+  return simple_write_to_buffer(writebuf, sizeof writebuf, ppos, buf, count);
+}
+
+static struct file_operations char_dev_fops = {
+  .owner = THIS_MODULE,
+  .open = dev_open,
+  .read = dev_read,
+  .write = dev_write,
+  .release = dev_release
+};
+
+
 int smartio_add_driver(struct smartio_driver* sd)
 {
   sd->driver.bus = &smartio_bus;
@@ -1131,7 +1174,6 @@ static int fcn_ctrl_remove(struct device* dev)
   return status;
 }
 
-
 static const struct smartio_device_id fcn_ctrl_table[] = {
   { "smartio_bus_master" },
   { NULL }
@@ -1147,7 +1189,6 @@ static struct smartio_driver fcn_ctrl_driver = {
   },
   .id_table = fcn_ctrl_table,
 };
-
 
 
 static int __init my_init(void)
@@ -1179,9 +1220,17 @@ static int __init my_init(void)
     goto fail_bus_driver;
   }
 
+  major = register_chrdev(0, "smartio", &char_dev_fops);
+  if (major < 0) {
+    pr_err("smartio: Failed to allocate major number\n");
+    goto fail_major_number;
+  }
+
   pr_info("smartio: Done registering  bus driver\n");
   return 0;
 
+ fail_major_number:
+  driver_unregister(&fcn_ctrl_driver.driver);
  fail_bus_driver:
   destroy_workqueue(work_queue);
 fail_workqueue:
@@ -1199,6 +1248,7 @@ module_init(my_init);
 
 static void __exit my_cleanup(void)
 {
+  unregister_chrdev(major, "smartio");
   driver_unregister(&fcn_ctrl_driver.driver);
   destroy_workqueue(work_queue);
   class_unregister(&smartio_function_class);
