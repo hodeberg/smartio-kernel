@@ -46,7 +46,7 @@ int dev_smartio_register_node(struct device *dev,
 int smartio_unregister_node(struct device *dev, void* null);
 
 #define SMARTIO_HEADER_SIZE (1 + 1)
-#define SMARTIO_DATA_SIZE 30
+#define SMARTIO_DATA_SIZE 31
 
 int smartio_get_no_of_modules(struct smartio_node* node, char* name);
 
@@ -126,7 +126,7 @@ enum smartio_status {
 #define IO_IS_OUTPUT 0x40
 #define IO_IS_DEVICE 0x20
 #define IO_IS_DIR 0x10
-
+#define ATTR_MAX_PAYLOAD (SMARTIO_DATA_SIZE - 5)
 
 struct smartio_comm_buf {
   struct list_head list;
@@ -137,6 +137,7 @@ struct smartio_comm_buf {
   uint8_t module;
   uint8_t command;
   uint16_t attr_index;
+  uint8_t array_index;
 #endif
   uint8_t data[SMARTIO_DATA_SIZE];
 };

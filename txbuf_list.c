@@ -62,30 +62,43 @@ struct smartio_comm_buf *smartio_find_transaction(int respId)
   struct smartio_comm_buf *next;
   struct smartio_comm_buf *result = NULL;
 
+#ifdef DBG_TRANS
   pr_info("Entering %s\n", __FUNCTION__);
+#endif
   mutex_lock(&tx_lock);
+#ifdef DBG_TRANS
   pr_info("Mutex has been claimed\n");
+#endif
   if (list_empty(&transactions)) {
     pr_err("No transactions in list!\n");
     return NULL;
   }
 
   list_for_each_entry_safe(req, next, &transactions, list) {
+#ifdef DBG_TRANS
     pr_info("Inspecting an item in the transaction queue\n");
     pr_info("Type: %d\n", smartio_get_msg_type(req));
+#endif
     if (smartio_get_msg_type(req) == SMARTIO_REQUEST) {
       int reqId = smartio_get_transaction_id(req);
 
+#ifdef DBG_TRANS
       pr_info("Found a request in the transaction queue\n");
+#endif
       if (reqId == respId) {
+#ifdef DBG_TRANS
 	pr_info("Matching transaction ID %d\n", respId);
+#endif
 	list_del(&req->list);
         releaseTransId(respId);
 	result = req;
 	break;
       }
-      else
+      else {
+#ifdef DBG_TRANS
 	pr_debug("Transaction ID mismatch. Resp: %d, Req: %d\n", respId, reqId);
+#endif
+      }
     }
   }
 

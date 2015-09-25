@@ -120,9 +120,8 @@ static void write_val_to_attr(const void* indata, struct attr_info* attr)
     pr_info("storing string: %s\n", (char *) indata);
     strcpy(attr->data.str, indata);
   }
-  else {
+  else
     attr->data.intval = smartio_buf2value(attr->type, indata);
-  }
 }
 
 
@@ -225,7 +224,19 @@ static int communicate(struct smartio_node* this,
       return -1;
     }
     attr = &modules[ix].attrs[attr_ix];
-    write_val_to_attr(tx->data+5, attr);
+    if (attr->directions & IO_IS_DEVICE) {
+      int data_bytes = tx->data_len;
+      int cur_ofs = 5;
+  
+      pr_info("Received device packet.\n");
+      while (cur_ofs < data_bytes) {
+	pr_info("%x ", (tx->data[cur_ofs] << 8) | tx->data[cur_ofs+1]);
+	cur_ofs += 2;
+      }
+      pr_info("\n");
+    }
+    else 
+      write_val_to_attr(tx->data+5, attr);
     rx->data_len = 1;
     break;
   case SMARTIO_GET_STRING:

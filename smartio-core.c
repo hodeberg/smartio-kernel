@@ -2,11 +2,11 @@
 #include <linux/module.h>
 #include <linux/sched.h>
 #include <linux/workqueue.h>
-
 #include <linux/idr.h>
 #include <linux/slab.h>
 #include <linux/kdev_t.h>
 #include <linux/fs.h>
+#include <asm-generic/uaccess.h>
 
 #include "smartio.h"
 #include "smartio_inline.h"
@@ -20,9 +20,17 @@ static int major;
 
 static void free_groups(struct attribute_group** groups);
 
+struct dev_attr_info {
+  bool isInput; /* Present in user space or sysfs for udev to set rw flags */
+  int type; /* Present to user space to simplify decoding */
+  int attr_ix;
+};
+
+
 struct fcn_dev {
   int function_ix;
   struct device dev;
+  struct dev_attr_info devattr;  
 };
 
 static void smartio_node_release(struct device *dev)
@@ -175,7 +183,9 @@ static void wq_fcn_post_message(struct work_struct *w)
 {
   struct smartio_work *my_work = container_of(w, struct smartio_work, work);
 
-  pr_warn("HAOD: request work function\n");
+#ifdef DBG_TRANS
+  pr_info("HAOD: request work function\n");
+#endif
   smartio_add_transaction(my_work->comm_buf);
   talk_to_node(my_work->node, my_work->comm_buf);
   kfree(my_work);
@@ -184,9 +194,11 @@ static void wq_fcn_post_message(struct work_struct *w)
 
 static int transaction_done(struct smartio_comm_buf *buf)
 {
-  pr_warn("HAOD: wakeup cond is %s\n",
+#ifdef DBG_TRANS
+  pr_info("HAOD: wakeup cond is %s\n",
 	  (smartio_get_direction(buf) == SMARTIO_FROM_NODE) ?
 	  "FROM_NODE" : "TO_NODE");
+#endif
   return smartio_get_direction(buf) == SMARTIO_FROM_NODE;
 }
 
@@ -211,9 +223,13 @@ static int post_request(struct smartio_node* node,
   INIT_WORK(&my_work->work, wq_fcn_post_message);
   my_work->comm_buf = buf;
   my_work->node = node;
-  pr_warn("HAOD: before queueing work\n");
+#ifdef DBG_WORK
+  pr_info("HAOD: before queueing work\n");
+#endif
   status = queue_work(work_queue, &my_work->work);
-  pr_warn("HAOD: after queueing work\n");
+#ifdef DBG_WORK
+  pr_info("HAOD: after queueing work\n");
+#endif
   if (!status) {
     pr_err("HAOD: failed to queue work\n");
     kfree(my_work);
@@ -221,10 +237,12 @@ static int post_request(struct smartio_node* node,
   }
   status = wait_event_interruptible(wait_queue, transaction_done(buf));
   if (status == 0) {
-    pr_warn("HAOD: woke up after request\n");
+#ifdef DBG_WORK
+    pr_info("HAOD: woke up after request\n");
+#endif
   }
   else {
-    pr_warn("HAOD: Received a signal\n");
+    pr_info("HAOD: Received a signal\n");
   }
   return status;
 }
@@ -469,6 +487,7 @@ int smartio_set_attr_value(struct smartio_node* node,
   smartio_write_16bit(buf, 2, attr);
   buf->data[4] = arr_ix;
   memcpy(buf->data + 5, data, len);
+  dev_info(&node->dev, "Posting %d bytes of attr data\n", len);
   status = post_request(node, buf);
   if (status < 0) {
     dev_err(&node->dev, "%s: request failed. Error %d\n", __func__, status);
@@ -823,6 +842,9 @@ define_function_attrs(struct smartio_node* node,
 						groups[i], &dev_attr);
 	  if (dev_attr) {
 	    function_dev->dev.devt = MKDEV(major, get_minor_number());
+	    function_dev->devattr.type = dev_attr->type;
+	    function_dev->devattr.isInput = dev_attr->input;
+	    function_dev->devattr.attr_ix = dev_attr - info;
 	    dev_attr = NULL;
 	  }
 	}
@@ -1077,9 +1099,48 @@ reclaim_node_memory:
 EXPORT_SYMBOL_GPL(dev_smartio_register_node);
 
 
+static int match_minor(struct device *dev, void *data)
+{
+  int *minor = (int *) data;
+
+  return MAJOR(dev->devt) && (MINOR(dev->devt) == *minor);
+}
+
+struct devf_buf {
+  char data[SMARTIO_DATA_SIZE];
+  int get;
+  int put;
+};
+
+
+/* Stores private data for an open device file */
+struct devf_info {
+  struct devf_buf buf; /* Stores data read from device but not returned to reader */
+  struct device *dev;  /* The function device */
+};
+
 static int dev_open(struct inode *i, struct file *filep)
 {
-  pr_info("HAOD: %s called for minor %d!\n", __func__, iminor(i));
+  int minor = iminor(i);
+  struct device *dev;
+  struct devf_info *devf;
+
+  pr_info("char_dev: %s called for minor %d!\n", __func__, minor);
+  dev = bus_find_device(&smartio_bus, NULL, &minor, match_minor);
+
+  if (!dev) {
+    pr_err("%s: cannot open() as there is no matching device\n", __func__);
+    return -ENODEV;
+  }
+  pr_info("device: %s\n", dev_name(dev));
+  
+  devf = kzalloc(sizeof *devf, GFP_KERNEL);
+  if (!devf) {
+    pr_err("%s: failed to allocate memory for private data\n", __func__);
+    return -ENOMEM;
+  }
+  devf->dev = dev;
+  filep->private_data = devf;
   return 0;
 }
 
@@ -1091,12 +1152,19 @@ static int dev_release(struct inode *i, struct file *filep)
 
 
 static const char readbuf[] = "Testing reading\n";
-static char writebuf[50];
+
 
 static ssize_t dev_read(struct file *filep, char *buf, size_t count, loff_t *ppos)
 {
+  struct devf_info *devf = (struct devf_info*) filep->private_data;
+  struct fcn_dev *fcn_dev = container_of(devf->dev, struct fcn_dev, dev);
+
   pr_info("HAOD: %s called!\n", __func__);
-  pr_info("len: %d, ofs: %d", (int) count, (int) *ppos);
+  pr_info("len: %d, ofs: %d\n", (int) count, (int) *ppos);
+  pr_info("device: %s\n", dev_name(&fcn_dev->dev));
+  pr_info("input: %s\n", fcn_dev->devattr.isInput ? "yes" : "no");
+  pr_info("attr ix = %d\n", fcn_dev->devattr.attr_ix);
+  pr_info("type = %d\n", fcn_dev->devattr.type);
 
   return simple_read_from_buffer(buf, count, ppos, readbuf, strlen(readbuf));
 }
@@ -1104,9 +1172,44 @@ static ssize_t dev_read(struct file *filep, char *buf, size_t count, loff_t *ppo
 static ssize_t dev_write(struct file *filep, const char *buf, 
 			 size_t count, loff_t *ppos)
 {
+  struct devf_info *devf = (struct devf_info*) filep->private_data;
+  struct fcn_dev *fcn_dev = container_of(devf->dev, struct fcn_dev, dev);
+  struct smartio_node *node = container_of(devf->dev->parent, struct smartio_node, dev);
+  char rawbuf[ATTR_MAX_PAYLOAD];
+  loff_t pos = *ppos;
+  int bytes_left = count;
+  
   pr_info("HAOD: %s called!\n", __func__);
   pr_info("len: %d, ofs: %d", (int) count, (int) *ppos);
-  return simple_write_to_buffer(writebuf, sizeof writebuf, ppos, buf, count);
+  pr_info("device: %s\n", dev_name(devf->dev));
+
+  if (pos < 0)
+    return -EINVAL;
+  if (!count)
+    return 0;
+  do {
+    const int bytes_to_copy = min(bytes_left, (int) (sizeof rawbuf));
+    const int bytes_not_copied = copy_from_user(rawbuf, buf+(count-bytes_left), bytes_to_copy);
+    const int bytes_to_send = bytes_to_copy - bytes_not_copied;
+
+    pr_info("to copy: %d, not copied: %d, to send: %d\n", bytes_to_copy, bytes_not_copied, bytes_to_send);
+    if (!bytes_to_send) {
+      if (bytes_left != count)
+	break;
+      else
+	return EFAULT;
+    }
+    smartio_set_attr_value(node,
+			   fcn_dev->function_ix,
+			   fcn_dev->devattr.attr_ix,
+			   0xFF, /* No arrays for now */
+			   rawbuf,
+			   bytes_to_send);
+    bytes_left -= bytes_to_send;
+  } while (bytes_left > 0);
+
+  *ppos += count - bytes_left;
+  return count - bytes_left;
 }
 
 static struct file_operations char_dev_fops = {
