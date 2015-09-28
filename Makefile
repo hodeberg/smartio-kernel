@@ -5,5 +5,8 @@ default:
 
 
 
-dev_write:
-	$(CC) -Wall dev_write.c -o $@
+dev_write: dev_write.c
+	$(CC) -Wall $^ -o $@
+
+dev_read: dev_read.c
+	$(CC) -Wall $^ -o $@

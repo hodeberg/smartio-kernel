@@ -202,8 +202,32 @@ static int communicate(struct smartio_node* this,
       return -1;
     }
     attr = &modules[ix].attrs[attr_ix];
-    write_val_to_buffer(rx->data+1, &len, attr->type, attr->data);
-    rx->data_len = len + 1;
+    if (attr->directions & IO_IS_DEVICE) {
+      int no_of_words = (SMARTIO_DATA_SIZE-1) / 2;
+      int i;
+      static int cur_val = 0;
+      uint8_t *p = rx->data + 1;
+
+      pr_info("Received device read request. Starting at %d\n", cur_val);
+      pr_info("no_of_words: %d\n", no_of_words);
+#if 1
+      for (i=0; i < no_of_words; i++) {
+	*p++ = cur_val >> 8;
+	*p++ = cur_val++;
+      }
+      rx->data_len = SMARTIO_DATA_SIZE;
+#else
+      *p++ = cur_val >> 8;
+      *p++ = cur_val++;      
+      *p++ = cur_val >> 8;
+      *p++ = cur_val++;      
+      rx->data_len = 5;
+#endif
+    }
+    else {
+      write_val_to_buffer(rx->data+1, &len, attr->type, attr->data);
+      rx->data_len = len + 1;
+    }
     break;
   case SMARTIO_SET_ATTR_VALUE:
     if ((ix < 0) || (ix >= ARRAY_SIZE(modules))) {

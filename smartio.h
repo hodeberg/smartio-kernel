@@ -45,7 +45,6 @@ int dev_smartio_register_node(struct device *dev,
 /* dev: the function bus controller to unregister */
 int smartio_unregister_node(struct device *dev, void* null);
 
-#define SMARTIO_HEADER_SIZE (1 + 1)
 #define SMARTIO_DATA_SIZE 31
 
 int smartio_get_no_of_modules(struct smartio_node* node, char* name);

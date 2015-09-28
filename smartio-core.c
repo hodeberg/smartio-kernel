@@ -421,7 +421,8 @@ static int smartio_get_attr_value(struct smartio_node* node,
 				  int function,
 				  int attr,
 				  int arr_ix,
-				  void *data)
+				  void *data,
+				  int *len)
 {
   struct smartio_comm_buf* buf;
   int status;
@@ -464,6 +465,7 @@ static int smartio_get_attr_value(struct smartio_node* node,
   }
 
   memcpy(data, buf->data + 1, buf->data_len - 1);
+  *len = buf->data_len - 1;
   return 0;
 }
 
@@ -536,6 +538,7 @@ static ssize_t show_fcn_attr(struct device *dev,
 {
 	u8 mybuf[40];
 	int result;
+	int bytes_read;
 	struct smartio_node *node = container_of(dev->parent, struct smartio_node, dev);
 	struct fcn_dev *fcn = container_of(dev, struct fcn_dev, dev);
 	struct fcn_attribute* fcn_attr = container_of(attr, struct fcn_attribute, dev_attr);
@@ -549,7 +552,8 @@ static ssize_t show_fcn_attr(struct device *dev,
 					fcn->function_ix,
 					fcn_attr->attr_ix,
 					0xFF, /* No arrays for now */
-					mybuf);
+					mybuf,
+					&bytes_read);
 	smartio_raw_to_string(fcn_attr->type, mybuf, buf);
 	return strlen(buf);
 }
@@ -1154,19 +1158,88 @@ static int dev_release(struct inode *i, struct file *filep)
 static const char readbuf[] = "Testing reading\n";
 
 
+/* 1st naive implementation: successively issue blocking reads until count
+   is achieved. If not all data read from device can be returned, it is stashed
+   in the private data. 
+   TODO: fix an implementation which returns available data and starts asynchronous
+   read requests from the device into a large buffer. */
 static ssize_t dev_read(struct file *filep, char *buf, size_t count, loff_t *ppos)
 {
   struct devf_info *devf = (struct devf_info*) filep->private_data;
   struct fcn_dev *fcn_dev = container_of(devf->dev, struct fcn_dev, dev);
+  struct smartio_node *node = container_of(devf->dev->parent, struct smartio_node, dev);
+  loff_t pos = *ppos;
+  int bytes_left = count;
+  struct devf_buf *cache = &devf->buf;
 
   pr_info("HAOD: %s called!\n", __func__);
   pr_info("len: %d, ofs: %d\n", (int) count, (int) *ppos);
   pr_info("device: %s\n", dev_name(&fcn_dev->dev));
+#if 0
   pr_info("input: %s\n", fcn_dev->devattr.isInput ? "yes" : "no");
   pr_info("attr ix = %d\n", fcn_dev->devattr.attr_ix);
   pr_info("type = %d\n", fcn_dev->devattr.type);
+#endif
 
-  return simple_read_from_buffer(buf, count, ppos, readbuf, strlen(readbuf));
+  if (pos < 0)
+    return -EINVAL;
+  if (!count)
+    return 0;
+
+  {
+    const int bytes_from_cache = min(cache->put - cache->get, bytes_left);
+    int bytes_not_copied_to_user;
+
+    if (bytes_from_cache > 0) {
+      pr_info("reading %d bytes from cache\n", bytes_from_cache);
+      bytes_not_copied_to_user = 
+	copy_to_user(buf, cache->data + cache->get, bytes_from_cache);
+      if (!bytes_not_copied_to_user) {
+	cache->get += bytes_from_cache;
+	if (cache->get == cache->put) 
+	  cache->get = cache->put = 0;
+      }
+      else {
+      pr_err("Failed to copy cache to user buffer. Tried %d, succeded with %d\n", 
+	     bytes_from_cache, (bytes_not_copied_to_user - bytes_from_cache));
+	return -EFAULT;
+      }
+      *ppos += bytes_from_cache;
+      bytes_left -= bytes_from_cache;
+    }
+  }
+  while (bytes_left) {
+    char rawbuf[SMARTIO_DATA_SIZE];
+    int bytes_read;
+    int bytes_to_user;
+    int bytes_not_copied_to_user;
+
+    smartio_get_attr_value(node, 
+			   fcn_dev->function_ix,
+			   fcn_dev->devattr.attr_ix,
+			   0xFF,
+			   rawbuf,
+			   &bytes_read);
+    pr_info("read %d bytes from device\n", bytes_read);
+    bytes_to_user = min(bytes_read, bytes_left);
+    pr_info("can return %d bytes to user\n", bytes_to_user);
+    bytes_not_copied_to_user = copy_to_user(buf+count-bytes_left, rawbuf, bytes_to_user);
+    if (bytes_not_copied_to_user) {
+      pr_err("Failed to copy to user buffer. Tried %d, succeded with %d\n", 
+	     bytes_to_user, (bytes_not_copied_to_user - bytes_to_user));
+      return -EFAULT;
+    }
+    *ppos += bytes_to_user;
+    bytes_left -= bytes_to_user;
+    if (!bytes_left && (bytes_to_user != bytes_read)) {
+      int bytes_to_cache = bytes_read - bytes_to_user;
+
+      pr_info("putting %d bytes in cache\n", bytes_to_cache);
+      memcpy(&cache->data, rawbuf + bytes_to_user, bytes_to_cache);
+      cache->put += bytes_to_cache;
+    }
+  };
+  return count;
 }
 
 static ssize_t dev_write(struct file *filep, const char *buf, 
@@ -1176,14 +1249,14 @@ static ssize_t dev_write(struct file *filep, const char *buf,
   struct fcn_dev *fcn_dev = container_of(devf->dev, struct fcn_dev, dev);
   struct smartio_node *node = container_of(devf->dev->parent, struct smartio_node, dev);
   char rawbuf[ATTR_MAX_PAYLOAD];
-  loff_t pos = *ppos;
+
   int bytes_left = count;
   
   pr_info("HAOD: %s called!\n", __func__);
   pr_info("len: %d, ofs: %d", (int) count, (int) *ppos);
   pr_info("device: %s\n", dev_name(devf->dev));
 
-  if (pos < 0)
+  if (*ppos < 0)
     return -EINVAL;
   if (!count)
     return 0;
