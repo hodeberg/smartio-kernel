@@ -29,11 +29,17 @@ int main(int argc, char *argv[])
     goto failed_memalloc;
   }
 
+  printf("Before open()\n");
   fd = open(argv[1], O_RDONLY);
   if (fd < 0) {
     printf("Failed to open %s due to: %s\n", argv[1], strerror(errno));
     goto failed_open;
   }
+#ifdef TEST_SKIP_READ
+  printf("After open()\n");
+  sleep(5);
+  printf("After sleep()\n");
+#else
   for (i=0; i < blocks; i++) {
     int bytes_read = 0;
 
@@ -62,6 +68,7 @@ int main(int argc, char *argv[])
       }
     } while (1);
   }
+#endif
   free(pBlock);
   close(fd);
   printf("Done!\n");

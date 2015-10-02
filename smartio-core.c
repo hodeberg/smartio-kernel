@@ -6,6 +6,7 @@
 #include <linux/slab.h>
 #include <linux/kdev_t.h>
 #include <linux/fs.h>
+#include <linux/kfifo.h>
 #include <asm-generic/uaccess.h>
 
 #include "smartio.h"
@@ -13,6 +14,9 @@
 #include "convert.h"
 #include "txbuf_list.h"
 #include "minor_id.h"
+
+struct smartio_devread_work;
+#define DEV_FIFO_SIZE 128
 
 /* Char device major number */
 static int major;
@@ -31,6 +35,8 @@ struct fcn_dev {
   int function_ix;
   struct device dev;
   struct dev_attr_info devattr;  
+  DECLARE_KFIFO_PTR(fifo, uint8_t);
+  struct smartio_devread_work *devread_work;  
 };
 
 static void smartio_node_release(struct device *dev)
@@ -124,6 +130,11 @@ struct smartio_work {
   struct smartio_node* node; 
 };
 
+struct smartio_devread_work {
+  struct delayed_work work;
+  struct fcn_dev* fcn_dev; 
+};
+
 
 static DEFINE_IDR(node_idr);
 static DECLARE_WAIT_QUEUE_HEAD(wait_queue);
@@ -139,12 +150,7 @@ static void handle_response(struct smartio_comm_buf *resp)
   req = smartio_find_transaction(smartio_get_transaction_id(resp));
 
   if (req) {
-	req->data_len = resp->data_len;
-	memcpy(req->data, resp->data, resp->data_len);
-	pr_info("Copied %d bytes from resp to req\n", req->data_len);
-	/* Swapping the direction tells waiter it needs to sleep
-           no more. */
-	smartio_set_direction(req, SMARTIO_FROM_NODE);
+	req->cb(req, resp, req->cb_data);
 	wake_up_interruptible(&wait_queue);
   }
 }
@@ -162,7 +168,7 @@ static int talk_to_node(struct smartio_node *node,
 
     switch (msg_type) {
     case SMARTIO_RESPONSE:
-      dev_err(&node->dev, "Got a response message\n");
+      dev_info(&node->dev, "Got a response message\n");
       handle_response(&rx);
       break;
     case SMARTIO_REQUEST:
@@ -203,6 +209,19 @@ static int transaction_done(struct smartio_comm_buf *buf)
 }
 
 
+static void request_completion_cb(struct smartio_comm_buf *req,
+				  struct smartio_comm_buf *resp,
+				  void *data)
+{
+  req->data_len = resp->data_len;
+  memcpy(req->data, resp->data, resp->data_len);
+  pr_info("Copied %d bytes from resp to req\n", req->data_len);
+  /* Swapping the direction tells waiter it needs to sleep
+     no more. */
+  smartio_set_direction(req, SMARTIO_FROM_NODE);
+}
+
+
 static int post_request(struct smartio_node* node,
 			struct smartio_comm_buf* buf)
 {
@@ -212,6 +231,8 @@ static int post_request(struct smartio_node* node,
   // Set the transaction header
   smartio_set_msg_type(buf, SMARTIO_REQUEST);
   smartio_set_direction(buf, SMARTIO_TO_NODE);
+  buf->cb = request_completion_cb;
+
 
   // Post deferred work
   my_work = kmalloc(sizeof *my_work, GFP_KERNEL);
@@ -1110,24 +1131,83 @@ static int match_minor(struct device *dev, void *data)
   return MAJOR(dev->devt) && (MINOR(dev->devt) == *minor);
 }
 
-struct devf_buf {
-  char data[SMARTIO_DATA_SIZE];
-  int get;
-  int put;
-};
+
+static void dev_read_completion_cb(struct smartio_comm_buf *req,
+				   struct smartio_comm_buf *resp,
+				   void *data)
+{
+  struct fcn_dev *dev = (struct fcn_dev *) data;
+
+  dev_info(&dev->dev, "%s", __func__);
+  if (kfifo_avail(&dev->fifo) < (resp->data_len-1)) {
+    dev_err(&dev->dev, "read fifo overrun\n");
+    goto free_buffers;
+  }
+  dev_info(&dev->dev, "%s: 1", __func__);
+  kfifo_in(&dev->fifo, resp->data + 1, resp->data_len-1);
+  dev_info(&dev->dev, "%s: 2", __func__);
+ free_buffers:
+  kfree(req);
+  dev_info(&dev->dev, "%s: 3", __func__);
+}
 
 
-/* Stores private data for an open device file */
-struct devf_info {
-  struct devf_buf buf; /* Stores data read from device but not returned to reader */
-  struct device *dev;  /* The function device */
-};
+#define DBG_DEV_READ
+
+static void wq_fcn_dev_read(struct work_struct *w)
+{
+  struct smartio_devread_work *my_work = 
+    container_of(to_delayed_work(w), struct smartio_devread_work, work);
+  struct smartio_node *node = container_of(my_work->fcn_dev->dev.parent,
+					   struct smartio_node, 
+					   dev);
+  struct smartio_comm_buf* tx;
+  int status;
+#ifdef DBG_DEV_READ
+  struct smartio_comm_buf *req;
+  struct smartio_comm_buf rx;
+
+  pr_info("%s: entry\n", __func__);
+#endif
+#if 1
+  tx = kzalloc(sizeof *tx, GFP_KERNEL);
+  if (tx) { 
+    tx->data_len = 5; // module + command + attr ix + array ix
+    tx->data[0] = my_work->fcn_dev->function_ix;
+    tx->data[1] =  SMARTIO_GET_ATTR_VALUE;
+    smartio_write_16bit(tx, 2, my_work->fcn_dev->devattr.attr_ix);
+    tx->data[4] = 0xFF;
+    tx->cb_data = my_work->fcn_dev;
+    tx->cb = dev_read_completion_cb;
+
+#ifdef DBG_DEV_READ
+    pr_info("%s: adding transaction\n", __func__);
+#endif
+    smartio_add_transaction(tx);
+#ifdef DBG_DEV_READ
+    pr_info("%s: talking to node\n", __func__);
+#endif
+    status = talk_to_node(node, tx);
+  }
+  else 
+    pr_err("Failed to allocate dev read comms buffer\n");
+#endif
+#ifdef DBG_DEV_READ
+  pr_info("%s: scheduling work\n", __func__);
+#endif
+
+  schedule_delayed_work(&my_work->work, msecs_to_jiffies(1000));
+#ifdef DBG_DEV_READ
+  pr_info("%s: exit\n", __func__);
+#endif
+
+}
 
 static int dev_open(struct inode *i, struct file *filep)
 {
   int minor = iminor(i);
   struct device *dev;
-  struct devf_info *devf;
+  struct fcn_dev *fcn_dev;
 
   pr_info("char_dev: %s called for minor %d!\n", __func__, minor);
   dev = bus_find_device(&smartio_bus, NULL, &minor, match_minor);
@@ -1137,40 +1217,67 @@ static int dev_open(struct inode *i, struct file *filep)
     return -ENODEV;
   }
   pr_info("device: %s\n", dev_name(dev));
+  fcn_dev = container_of(dev, struct fcn_dev, dev);
   
-  devf = kzalloc(sizeof *devf, GFP_KERNEL);
-  if (!devf) {
-    pr_err("%s: failed to allocate memory for private data\n", __func__);
-    return -ENOMEM;
+  if (filep->f_mode & FMODE_READ) {
+    if (kfifo_alloc(&fcn_dev->fifo, DEV_FIFO_SIZE, GFP_KERNEL)) {
+      pr_err("%s: failed to allocate memory for device kfifo buffer\n", __func__);
+      return -ENOMEM;
+    }
+    // Post deferred work
+    fcn_dev->devread_work = kmalloc(sizeof *fcn_dev->devread_work, GFP_KERNEL);
+    if (!fcn_dev->devread_work) {
+      dev_err(&fcn_dev->dev, "No memory for work item\n");
+      goto free_kfifo_mem;
+    }
+    INIT_DELAYED_WORK(&fcn_dev->devread_work->work, wq_fcn_dev_read);
+    fcn_dev->devread_work->fcn_dev = fcn_dev;
+    if (!queue_delayed_work(work_queue, &fcn_dev->devread_work->work, 0)) {
+      pr_err("HAOD: failed to queue work\n");
+      goto free_work;
+    }
   }
-  devf->dev = dev;
-  filep->private_data = devf;
+
+  filep->private_data = fcn_dev;
   return 0;
+
+ free_work:
+  kfree(fcn_dev->devread_work);
+ free_kfifo_mem:
+  kfifo_free(&fcn_dev->fifo);
+  return -ENOMEM;
 }
 
 static int dev_release(struct inode *i, struct file *filep)
 {
-  pr_info("HAOD: %s called for minor %d!\n", __func__, iminor(i));
+  struct fcn_dev *fcn_dev = (struct fcn_dev*) filep->private_data;
+
+  pr_info("HAOD: %s called for minor %d!\n", __func__, iminor(i)); 
+  if (filep->f_mode & FMODE_READ) {
+    if (!cancel_delayed_work(&fcn_dev->devread_work->work))
+      flush_workqueue(work_queue);
+    kfree(fcn_dev->devread_work);
+    fcn_dev->devread_work = NULL;
+    kfifo_free(&fcn_dev->fifo);
+  }
+
   return 0;
 }
 
 
-static const char readbuf[] = "Testing reading\n";
 
 
-/* 1st naive implementation: successively issue blocking reads until count
-   is achieved. If not all data read from device can be returned, it is stashed
-   in the private data. 
-   TODO: fix an implementation which returns available data and starts asynchronous
-   read requests from the device into a large buffer. */
+/* The read will continue until the requested count has been reached
+   before returning.
+   Whenever something is present in the kfifo, it is copied to the user-space
+   buffer. 
+   When there is nothing in the kfifo, the function sleeps. */
 static ssize_t dev_read(struct file *filep, char *buf, size_t count, loff_t *ppos)
 {
-  struct devf_info *devf = (struct devf_info*) filep->private_data;
-  struct fcn_dev *fcn_dev = container_of(devf->dev, struct fcn_dev, dev);
-  struct smartio_node *node = container_of(devf->dev->parent, struct smartio_node, dev);
-  loff_t pos = *ppos;
+  struct fcn_dev *fcn_dev = (struct fcn_dev*) filep->private_data;
+
   int bytes_left = count;
-  struct devf_buf *cache = &devf->buf;
+  int bytes_available;
 
   pr_info("HAOD: %s called!\n", __func__);
   pr_info("len: %d, ofs: %d\n", (int) count, (int) *ppos);
@@ -1181,80 +1288,71 @@ static ssize_t dev_read(struct file *filep, char *buf, size_t count, loff_t *ppo
   pr_info("type = %d\n", fcn_dev->devattr.type);
 #endif
 
-  if (pos < 0)
+  if (*ppos < 0)
     return -EINVAL;
   if (!count)
     return 0;
 
-  {
-    const int bytes_from_cache = min(cache->put - cache->get, bytes_left);
-    int bytes_not_copied_to_user;
+  while (bytes_left > 0) {
+    if (kfifo_is_empty(&fcn_dev->fifo)) {
+      int status;
+      const int fifo_threshold = kfifo_size(&fcn_dev->fifo) / 2;
 
-    if (bytes_from_cache > 0) {
-      pr_info("reading %d bytes from cache\n", bytes_from_cache);
-      bytes_not_copied_to_user = 
-	copy_to_user(buf, cache->data + cache->get, bytes_from_cache);
-      if (!bytes_not_copied_to_user) {
-	cache->get += bytes_from_cache;
-	if (cache->get == cache->put) 
-	  cache->get = cache->put = 0;
+      dev_info(&fcn_dev->dev,"Fifo empty; sleeping\n");
+      status = wait_event_interruptible(wait_queue, 
+					kfifo_len(&fcn_dev->fifo) >= 
+					min(bytes_left, fifo_threshold));
+      dev_info(&fcn_dev->dev,"Fifo no longer empty; woke up\n");
+      if (status == 0) {
+#ifdef DBG_WORK
+	dev_info(&fcn_dev->dev, "HAOD: woke up after request\n");
+#endif
       }
       else {
-      pr_err("Failed to copy cache to user buffer. Tried %d, succeded with %d\n", 
-	     bytes_from_cache, (bytes_not_copied_to_user - bytes_from_cache));
+	dev_info(&fcn_dev->dev, "%s: Received a signal\n", __func__);
+	// TBD: handle signal interruption correctly
+	return -EFAULT; 
+      }
+    }
+
+    dev_info(&fcn_dev->dev, "About to read from fifo\n");
+    while (((bytes_available = kfifo_len(&fcn_dev->fifo)) > 0) &&
+         bytes_left) {
+      int bytes_to_read = min(bytes_available, bytes_left);
+      int bytes_read;
+    
+      dev_info(&fcn_dev->dev, "bytes in fifo: %d\n", bytes_available);
+      dev_info(&fcn_dev->dev, "bytes left: %d\n", bytes_left);
+      dev_info(&fcn_dev->dev, "bytes to read: %d\n", bytes_to_read);
+      if (kfifo_to_user(&fcn_dev->fifo, 
+			buf + count - bytes_left, 
+			bytes_to_read,
+			&bytes_read) < 0) {
+	dev_err(&fcn_dev->dev, "%s: Failed to read from kfifo\n", __func__);
 	return -EFAULT;
       }
-      *ppos += bytes_from_cache;
-      bytes_left -= bytes_from_cache;
-    }
+      bytes_left -= bytes_read;
+      *ppos += bytes_read;
+    };
+    dev_info(&fcn_dev->dev, "Done (for now) reading from fifo\n");
   }
-  while (bytes_left) {
-    char rawbuf[SMARTIO_DATA_SIZE];
-    int bytes_read;
-    int bytes_to_user;
-    int bytes_not_copied_to_user;
-
-    smartio_get_attr_value(node, 
-			   fcn_dev->function_ix,
-			   fcn_dev->devattr.attr_ix,
-			   0xFF,
-			   rawbuf,
-			   &bytes_read);
-    pr_info("read %d bytes from device\n", bytes_read);
-    bytes_to_user = min(bytes_read, bytes_left);
-    pr_info("can return %d bytes to user\n", bytes_to_user);
-    bytes_not_copied_to_user = copy_to_user(buf+count-bytes_left, rawbuf, bytes_to_user);
-    if (bytes_not_copied_to_user) {
-      pr_err("Failed to copy to user buffer. Tried %d, succeded with %d\n", 
-	     bytes_to_user, (bytes_not_copied_to_user - bytes_to_user));
-      return -EFAULT;
-    }
-    *ppos += bytes_to_user;
-    bytes_left -= bytes_to_user;
-    if (!bytes_left && (bytes_to_user != bytes_read)) {
-      int bytes_to_cache = bytes_read - bytes_to_user;
-
-      pr_info("putting %d bytes in cache\n", bytes_to_cache);
-      memcpy(&cache->data, rawbuf + bytes_to_user, bytes_to_cache);
-      cache->put += bytes_to_cache;
-    }
-  };
-  return count;
+  return count - bytes_left;
 }
+
+
 
 static ssize_t dev_write(struct file *filep, const char *buf, 
 			 size_t count, loff_t *ppos)
 {
-  struct devf_info *devf = (struct devf_info*) filep->private_data;
-  struct fcn_dev *fcn_dev = container_of(devf->dev, struct fcn_dev, dev);
-  struct smartio_node *node = container_of(devf->dev->parent, struct smartio_node, dev);
+  struct fcn_dev *fcn_dev = (struct fcn_dev*) filep->private_data;
+  struct smartio_node *node = container_of(fcn_dev->dev.parent, struct smartio_node, dev);
   char rawbuf[ATTR_MAX_PAYLOAD];
 
   int bytes_left = count;
   
   pr_info("HAOD: %s called!\n", __func__);
   pr_info("len: %d, ofs: %d", (int) count, (int) *ppos);
-  pr_info("device: %s\n", dev_name(devf->dev));
+  pr_info("device: %s\n", dev_name(&fcn_dev->dev));
 
   if (*ppos < 0)
     return -EINVAL;

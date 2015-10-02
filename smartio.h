@@ -127,8 +127,14 @@ enum smartio_status {
 #define IO_IS_DIR 0x10
 #define ATTR_MAX_PAYLOAD (SMARTIO_DATA_SIZE - 5)
 
+typedef void (*smartio_tx_completion_cb)(struct smartio_comm_buf *req,
+					 struct smartio_comm_buf *resp,
+					 void *data);
+
 struct smartio_comm_buf {
   struct list_head list;
+  void *cb_data;
+  smartio_tx_completion_cb cb;
   uint8_t data_len;
   uint8_t msg_type;
   uint8_t transport_header;
