@@ -270,19 +270,6 @@ static int post_request(struct smartio_node* node,
 
 
 
-static int smartio_read_16bit(struct smartio_comm_buf* buf, int ofs)
-{
-  return (buf->data[ofs] << 8) + buf->data[ofs+1];
-}
-
-
-static void smartio_write_16bit(struct smartio_comm_buf* buf, int ofs, int val)
-{
-  buf->data[ofs] = val >> 8;
-  buf->data[ofs+1] = val;
-}
-
-
 int smartio_get_no_of_modules(struct smartio_node* node, char *name)
 {
   struct smartio_comm_buf* buf;
@@ -1163,44 +1150,21 @@ static void wq_fcn_dev_read(struct work_struct *w)
 					   dev);
   struct smartio_comm_buf* tx;
   int status;
-#ifdef DBG_DEV_READ
-  struct smartio_comm_buf *req;
-  struct smartio_comm_buf rx;
 
-  pr_info("%s: entry\n", __func__);
-#endif
-#if 1
   tx = kzalloc(sizeof *tx, GFP_KERNEL);
   if (tx) { 
-    tx->data_len = 5; // module + command + attr ix + array ix
-    tx->data[0] = my_work->fcn_dev->function_ix;
-    tx->data[1] =  SMARTIO_GET_ATTR_VALUE;
-    smartio_write_16bit(tx, 2, my_work->fcn_dev->devattr.attr_ix);
-    tx->data[4] = 0xFF;
+    fillbuf_get_attr_value(tx, my_work->fcn_dev->function_ix,
+			   my_work->fcn_dev->devattr.attr_ix, 0xFF);
     tx->cb_data = my_work->fcn_dev;
     tx->cb = dev_read_completion_cb;
 
-#ifdef DBG_DEV_READ
-    pr_info("%s: adding transaction\n", __func__);
-#endif
     smartio_add_transaction(tx);
-#ifdef DBG_DEV_READ
-    pr_info("%s: talking to node\n", __func__);
-#endif
     status = talk_to_node(node, tx);
   }
   else 
     pr_err("Failed to allocate dev read comms buffer\n");
-#endif
-#ifdef DBG_DEV_READ
-  pr_info("%s: scheduling work\n", __func__);
-#endif
 
   schedule_delayed_work(&my_work->work, msecs_to_jiffies(1000));
-#ifdef DBG_DEV_READ
-  pr_info("%s: exit\n", __func__);
-#endif
-
 }
 
 static int dev_open(struct inode *i, struct file *filep)
@@ -1272,7 +1236,7 @@ static int dev_release(struct inode *i, struct file *filep)
    Whenever something is present in the kfifo, it is copied to the user-space
    buffer. 
    When there is nothing in the kfifo, the function sleeps. */
-static ssize_t dev_read(struct file *filep, char *buf, size_t count, loff_t *ppos)
+static ssize_t dev_read(struct file *filep, char __user *buf, size_t count, loff_t *ppos)
 {
   struct fcn_dev *fcn_dev = (struct fcn_dev*) filep->private_data;
 
@@ -1316,8 +1280,8 @@ static ssize_t dev_read(struct file *filep, char *buf, size_t count, loff_t *ppo
     }
 
     dev_info(&fcn_dev->dev, "About to read from fifo\n");
-    while (((bytes_available = kfifo_len(&fcn_dev->fifo)) > 0) &&
-         bytes_left) {
+    bytes_available = kfifo_len(&fcn_dev->fifo);
+    if (bytes_available  > 0) {
       int bytes_to_read = min(bytes_available, bytes_left);
       int bytes_read;
     
@@ -1341,7 +1305,7 @@ static ssize_t dev_read(struct file *filep, char *buf, size_t count, loff_t *ppo
 
 
 
-static ssize_t dev_write(struct file *filep, const char *buf, 
+static ssize_t dev_write(struct file *filep, const char __user *buf, 
 			 size_t count, loff_t *ppos)
 {
   struct fcn_dev *fcn_dev = (struct fcn_dev*) filep->private_data;

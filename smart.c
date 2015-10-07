@@ -32,16 +32,6 @@ static void fill_reply_buffer(struct smartio_comm_buf* rx,
   //pr_warn("HAOD: rx header after set direction is %x\n", rx->transport_header);
 }
 	
-static void smartio_write_16bit(struct smartio_comm_buf* buf, int ofs, int val)
-{
-  buf->data[ofs] = val >> 8;
-  buf->data[ofs+1] = val;
-}
-
-static int smartio_read_16bit(struct smartio_comm_buf* buf, int ofs)
-{
-  return  (buf->data[ofs] << 8) | buf->data[ofs+1];
-}
 		     
 
 /* This is a dummy communicate(), which does not touch any hardware.

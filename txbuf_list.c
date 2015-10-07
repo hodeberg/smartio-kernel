@@ -1,5 +1,6 @@
 #include "smartio.h"
 #include "txbuf_list.h"
+#include "comm_buf.h"
 
 #define TRANS_ID_BITS (1  << SMARTIO_TRANS_ID_SIZE)
 static DECLARE_BITMAP(transId, TRANS_ID_BITS);
