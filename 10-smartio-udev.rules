@@ -1,0 +1,4 @@
+SUBSYSTEM=="smartio", GROUP="smartio"
+SUBSYSTEM=="smartio", ATTR{chardev_direction}=="in", MODE="440"
+SUBSYSTEM=="smartio", ATTR{chardev_direction}=="out", MODE="220"
+

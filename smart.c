@@ -72,10 +72,16 @@ struct attr_info adc_attrs[] = {
   { IO_IS_OUTPUT, 0, IO_PRESSURE_KPA, "pressure", .data.intval = 1000 }
 };
 
+struct attr_info adc2_attrs[] = {
+  { IO_IS_INPUT, 0, IO_ASCII_STRING, "offset", .data.str = str1 },
+  { IO_IS_OUTPUT, 0, IO_PRESSURE_KPA, "pressure", .data.intval = 1000 },
+  { IO_IS_INPUT | IO_IS_DEVICE, 0, IO_ENERGY_WH, "dev_energy", .data.intval = 500 }
+};
+
 struct attr_info dac_attrs[] = {
   { IO_IS_INPUT, 0, IO_ASCII_STRING, "gain", .data.str = str2 },
   { IO_IS_INPUT | IO_IS_OUTPUT, 0, IO_ENERGY_WH, "energy", .data.intval =2000 },
-  { IO_IS_INPUT | IO_IS_DEVICE, 0, IO_ENERGY_WH, "dev_energy", .data.intval = 500 }
+  { IO_IS_OUTPUT | IO_IS_DEVICE, 0, IO_ENERGY_WH, "dev_energy", .data.intval = 500 }
 };
 
 struct attr_info node_attrs[] = {
@@ -92,7 +98,7 @@ struct module_info {
 struct module_info modules[] = {
   { "smartio-i2c-hod", ARRAY_SIZE(node_attrs), node_attrs },
   { "adc", ARRAY_SIZE(adc_attrs), adc_attrs },
-  { "adc", ARRAY_SIZE(adc_attrs), adc_attrs },
+  { "adc", ARRAY_SIZE(adc2_attrs), adc2_attrs },
   { "dac", ARRAY_SIZE(dac_attrs), dac_attrs },
   { "dac", ARRAY_SIZE(dac_attrs), dac_attrs },
   { "dac", ARRAY_SIZE(dac_attrs), dac_attrs }

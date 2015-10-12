@@ -909,6 +909,32 @@ static int get_highest_dev_id(const char *devname)
 }
 
 
+
+static ssize_t chardev_direction_show(struct device *dev,
+				      struct device_attribute *attr,
+				      char *buf)
+{
+  struct fcn_dev *fcn = container_of(dev, struct fcn_dev, dev);
+
+  return scnprintf(buf, PAGE_SIZE, "%s\n",
+		   fcn->devattr.isInput ? "in" : "out");
+}
+
+static DEVICE_ATTR_RO(chardev_direction);
+
+struct attribute *chardev_function_attrs[] = {
+  &dev_attr_chardev_direction.attr,
+  NULL
+};
+
+ATTRIBUTE_GROUPS(chardev_function);
+
+static struct device_type smartio_chardev_function = {
+  .groups = chardev_function_groups
+};
+
+
+
 static int create_function_device(struct smartio_node *node,
 				  int function_ix)
 {
@@ -954,11 +980,8 @@ static int create_function_device(struct smartio_node *node,
 				"Could not define function attrs\n");
 			goto release_memory;
 		}
-#if 0
-		dump_group_tree(function_dev->dev.groups);
-
-		function_dev->dev.groups = NULL;
-#endif
+		if (MAJOR(function_dev->dev.devt))
+		  function_dev->dev.type = &smartio_chardev_function;
 		status = device_register(&function_dev->dev);
 		if (status < 0) {
 			dev_err(&node->dev, 
