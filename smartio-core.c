@@ -2,11 +2,11 @@
 #include <linux/module.h>
 #include <linux/sched.h>
 #include <linux/workqueue.h>
-#include <linux/idr.h>
 #include <linux/slab.h>
 #include <linux/kdev_t.h>
 #include <linux/fs.h>
 #include <linux/kfifo.h>
+#include <linux/ctype.h>
 #include <asm-generic/uaccess.h>
 
 #include "smartio.h"
@@ -136,7 +136,6 @@ struct smartio_devread_work {
 };
 
 
-static DEFINE_IDR(node_idr);
 static DECLARE_WAIT_QUEUE_HEAD(wait_queue);
 
 
@@ -245,25 +244,25 @@ static int post_request(struct smartio_node* node,
   my_work->comm_buf = buf;
   my_work->node = node;
 #ifdef DBG_WORK
-  pr_info("HAOD: before queueing work\n");
+  pr_info("Before queueing work\n");
 #endif
   status = queue_work(work_queue, &my_work->work);
 #ifdef DBG_WORK
-  pr_info("HAOD: after queueing work\n");
+  pr_info("After queueing work\n");
 #endif
   if (!status) {
-    pr_err("HAOD: failed to queue work\n");
+    pr_err("Failed to queue work\n");
     kfree(my_work);
     return -ENOMEM; // TBD better error code
   }
   status = wait_event_interruptible(wait_queue, transaction_done(buf));
   if (status == 0) {
 #ifdef DBG_WORK
-    pr_info("HAOD: woke up after request\n");
+    pr_info("Woke up after request\n");
 #endif
   }
   else {
-    pr_info("HAOD: Received a signal\n");
+    pr_info("Received a signal\n");
   }
   return status;
 }
@@ -294,36 +293,6 @@ int smartio_get_no_of_modules(struct smartio_node* node, char *name)
   return smartio_read_16bit(buf, 1);
 }
 EXPORT_SYMBOL(smartio_get_no_of_modules);
-
-#define SOME_LATER_KERNEL_VERSION
-static int alloc_new_node_number(void *node)
-{
-  int id;
-
-#ifdef SOME_LATER_KERNEL_VERSION
-#if 0
-  mutex_lock(&core_lock);
-#endif
-  id = idr_alloc(&node_idr, node, 1, 0, GFP_KERNEL);
-#if 0
-  mutex_unlock(&core_lock);
-#endif
-#else
-  int result = -EAGAIN;
-  
-  do {
-    if (idr_pre_get(&node_idr, GFP_KERNEL) == 0) {
-      pr_err("smartio: Failed to alloc idr\n");
-      return -1;
-    }
-    mutex_lock(&core_lock);
-    result = idr_get_new(&node_idr, node, &id);
-    mutex_unlock(&core_lock);
-  } while (result == -EAGAIN);
-#endif
-
-  return id;
-}
 
 
 
@@ -682,17 +651,25 @@ static void free_group(struct attribute_group *grp)
 		for (attr = grp->attrs; *attr != NULL; attr++) {
 			struct attribute *a = *attr;
 			struct device_attribute* d;
-				
+
+#if 0				
 			pr_warn("Free: attr name %s\n", a->name);
+#endif
 			kfree(a->name);
 			d = container_of(a, struct device_attribute, attr);
+#if 0
 			pr_warn("Free: attribute\n");
+#endif
 			kfree(d);
 		}
+#if 0
 		pr_warn("Free: group attrs\n");
+#endif
 		kfree(grp->attrs);
 		grp->attrs = NULL;
+#if 0
 		pr_warn("Free: group name %s\n", grp->name);
+#endif
 		kfree(grp->name);
 		grp->name = NULL;
 	}
@@ -903,6 +880,35 @@ static void free_attributes(struct device* dev)
 }
 #endif
 
+struct dev_match {
+  int id;
+  const char *devname;
+};
+
+
+static int update_devid_if_match(struct device *dev, void *data)
+{
+  struct dev_match *info = data;
+  const char *name_to_test = dev_name(dev);
+  
+  if (!strncmp(info->devname, name_to_test, strlen(info->devname)) && 
+      isdigit(name_to_test[strlen(info->devname)])) {
+    info->id = max(info->id, (int) dev->id);
+  }
+
+  return 0;
+}
+
+static int get_highest_dev_id(const char *devname)
+{
+  struct dev_match data = { -1, devname };
+
+  bus_for_each_dev(&smartio_bus, NULL, &data, update_devid_if_match);
+
+  return data.id;
+}
+
+
 static int create_function_device(struct smartio_node *node,
 				  int function_ix)
 {
@@ -933,9 +939,10 @@ static int create_function_device(struct smartio_node *node,
 			 no_of_attributes);
 
 		function_dev->dev.parent = &node->dev;
-		dev_set_name(&function_dev->dev, function_name);
 		function_dev->dev.bus = &smartio_bus;
-		function_dev->dev.id = 0;
+		function_dev->dev.id = get_highest_dev_id(function_name) + 1;
+		dev_set_name(&function_dev->dev, "%s%d", function_name,
+			     function_dev->dev.id);
 		//      function_dev->dev.class = &smartio_function_class;
 		function_dev->dev.release = function_release;
 		define_function_attrs(node, 
@@ -990,25 +997,24 @@ static int smartio_register_node(struct device *dev, struct smartio_node *node, 
 {
 	int status = -1;
 
-	dev_warn(dev, "HAOD: entering register_node\n");
 	device_initialize(&node->dev);
 	node->dev.parent = dev;
 	node->dev.bus = &smartio_bus;
 	node->dev.type = &controller_devt;
-	node->dev.id = alloc_new_node_number(&controller_devt);
-	dev_info(dev, "HAOD: allocated node number %d\n", node->dev.id);
+	node->dev.id = get_highest_dev_id(smartio_bus.dev_name) + 1;
+	dev_info(dev, "Allocated node number %d\n", node->dev.id);
 	if (node->dev.id < 0)
 		return node->dev.id;
 
 	dev_set_drvdata(dev, node);
 	status = device_add(&node->dev);
-	dev_info(dev, "HAOD: added node %s\n", dev_name(&node->dev));
+	dev_info(dev, "Added node %s\n", dev_name(&node->dev));
 	if (status < 0) {
-		dev_err(dev, "HAOD: failed to add node device\n");
+		dev_err(dev, "Failed to add node device\n");
 		put_device(&node->dev);
 		return status;
 	}
-	dev_info(dev, "HAOD: Registered master %s\n", dev_name(&node->dev));
+	dev_info(dev, "Registered master %s\n", dev_name(&node->dev));
 
 	return 0;
 }
@@ -1023,7 +1029,9 @@ static int dev_unregister_function(struct device* dev, void* null)
      we can access it after unregistering. */
   devt = dev->devt;
   device_unregister(dev);
-  return MAJOR(devt) ? release_minor_number(MINOR(devt)) : 0;
+  if (MAJOR(devt))
+    release_minor_number(MINOR(devt));
+  return 0;
 }
 
 
@@ -1032,7 +1040,7 @@ int smartio_unregister_node(struct device *dev, void* null)
 {
 	dev_warn(dev, "Unregistering function bus controller node\n");
 	device_unregister(dev);
-	pr_warn("HAOD: Unregistering done.\n");
+	pr_warn("Unregistering done.\n");
 	return 0;
 }
 EXPORT_SYMBOL_GPL(smartio_unregister_node);
@@ -1051,21 +1059,20 @@ int devm_smartio_register_node(struct device *dev)
   struct smartio_node **ptr;
   int ret;
 
-  pr_warn("HAOD: should reach this!!!\n");
-  dev_warn(dev, "HAOD: about to register based on %s\n", dev_name(dev));
+  dev_warn(dev, "About to register based on %s\n", dev_name(dev));
 
   node = devm_kzalloc(dev, sizeof *node, GFP_KERNEL);
   if (!node)
     return -ENOMEM;
 
-  dev_warn(dev, "HAOD: allocated node mem\n");
+  dev_warn(dev, "Allocated node mem\n");
   ptr = devres_alloc(devm_smartio_unregister, sizeof(*ptr), GFP_KERNEL);
   if (!ptr)
     return -ENOMEM;
-  dev_warn(dev, "HAOD: allocated devres\n");
+  dev_warn(dev, "Allocated devres\n");
   ret = smartio_register_node(dev, node);
   if (!ret) {
-    dev_warn(dev, "HAOD: smartio_register_node successful\n");
+    dev_warn(dev, "smartio_register_node successful\n");
     *ptr = node;
     devres_add(dev, ptr);
   }
@@ -1087,20 +1094,20 @@ int dev_smartio_register_node(struct device *dev,
   struct smartio_node *node;
   int ret = 0;
 
-  dev_warn(dev, "HAOD: about to register based on %s\n", dev_name(dev));
+  dev_warn(dev, "About to register based on %s\n", dev_name(dev));
 
   node = kzalloc(sizeof *node, GFP_KERNEL);
   if (!node) 
     return -ENOMEM;
-  dev_warn(dev, "HAOD: allocated node mem\n");
+  dev_warn(dev, "Allocated node mem\n");
 
   node->communicate = cb;
   ret = smartio_register_node(dev, node, name);
   if (ret) {
-    dev_warn(dev, "HAOD: dev_smartio_register_node failed\n");
+    dev_warn(dev, "%s failed\n", __func__);
     goto reclaim_node_memory;
   }
-  dev_warn(dev, "HAOD: dev_smartio_register_node successful\n");
+  dev_warn(dev, "%s successful\n", __func__);
 
 
   return ret;
@@ -1125,21 +1132,16 @@ static void dev_read_completion_cb(struct smartio_comm_buf *req,
 {
   struct fcn_dev *dev = (struct fcn_dev *) data;
 
-  dev_info(&dev->dev, "%s", __func__);
   if (kfifo_avail(&dev->fifo) < (resp->data_len-1)) {
     dev_err(&dev->dev, "read fifo overrun\n");
     goto free_buffers;
   }
-  dev_info(&dev->dev, "%s: 1", __func__);
   kfifo_in(&dev->fifo, resp->data + 1, resp->data_len-1);
-  dev_info(&dev->dev, "%s: 2", __func__);
  free_buffers:
   kfree(req);
-  dev_info(&dev->dev, "%s: 3", __func__);
 }
 
 
-#define DBG_DEV_READ
 
 static void wq_fcn_dev_read(struct work_struct *w)
 {
@@ -1185,19 +1187,19 @@ static int dev_open(struct inode *i, struct file *filep)
   
   if (filep->f_mode & FMODE_READ) {
     if (kfifo_alloc(&fcn_dev->fifo, DEV_FIFO_SIZE, GFP_KERNEL)) {
-      pr_err("%s: failed to allocate memory for device kfifo buffer\n", __func__);
+      dev_err(dev, "%s: failed to allocate memory for device kfifo buffer\n", __func__);
       return -ENOMEM;
     }
     // Post deferred work
     fcn_dev->devread_work = kmalloc(sizeof *fcn_dev->devread_work, GFP_KERNEL);
     if (!fcn_dev->devread_work) {
-      dev_err(&fcn_dev->dev, "No memory for work item\n");
+      dev_err(dev, "No memory for work item\n");
       goto free_kfifo_mem;
     }
     INIT_DELAYED_WORK(&fcn_dev->devread_work->work, wq_fcn_dev_read);
     fcn_dev->devread_work->fcn_dev = fcn_dev;
     if (!queue_delayed_work(work_queue, &fcn_dev->devread_work->work, 0)) {
-      pr_err("HAOD: failed to queue work\n");
+      dev_err(dev, "Failed to queue work\n");
       goto free_work;
     }
   }
@@ -1216,7 +1218,7 @@ static int dev_release(struct inode *i, struct file *filep)
 {
   struct fcn_dev *fcn_dev = (struct fcn_dev*) filep->private_data;
 
-  pr_info("HAOD: %s called for minor %d!\n", __func__, iminor(i)); 
+  dev_info(&fcn_dev->dev, "%s called for minor %d!\n", __func__, iminor(i)); 
   if (filep->f_mode & FMODE_READ) {
     if (!cancel_delayed_work(&fcn_dev->devread_work->work))
       flush_workqueue(work_queue);
@@ -1243,7 +1245,7 @@ static ssize_t dev_read(struct file *filep, char __user *buf, size_t count, loff
   int bytes_left = count;
   int bytes_available;
 
-  pr_info("HAOD: %s called!\n", __func__);
+  pr_info("%s called!\n", __func__);
   pr_info("len: %d, ofs: %d\n", (int) count, (int) *ppos);
   pr_info("device: %s\n", dev_name(&fcn_dev->dev));
 #if 0
@@ -1269,7 +1271,7 @@ static ssize_t dev_read(struct file *filep, char __user *buf, size_t count, loff
       dev_info(&fcn_dev->dev,"Fifo no longer empty; woke up\n");
       if (status == 0) {
 #ifdef DBG_WORK
-	dev_info(&fcn_dev->dev, "HAOD: woke up after request\n");
+	dev_info(&fcn_dev->dev, "Woke up after request\n");
 #endif
       }
       else {
@@ -1314,7 +1316,7 @@ static ssize_t dev_write(struct file *filep, const char __user *buf,
 
   int bytes_left = count;
   
-  pr_info("HAOD: %s called!\n", __func__);
+  pr_info("%s called!\n", __func__);
   pr_info("len: %d, ofs: %d", (int) count, (int) *ppos);
   pr_info("device: %s\n", dev_name(&fcn_dev->dev));
 
@@ -1381,10 +1383,10 @@ static int fcn_ctrl_probe(struct device* dev)
 
   node = container_of(dev, struct smartio_node, dev);
   dev_info(dev, "Bus probe for function bus controller driver\n");
-  dev_info(dev, "HAOD: parent dev name is %s\n", dev_name(dev->parent));
+  dev_info(dev, "Parent dev name is %s\n", dev_name(dev->parent));
   no_of_modules = smartio_get_no_of_modules(node, node_name);
-  dev_info(dev, "HAOD: Node has %d modules\n", no_of_modules);
-  dev_info(dev, "HAOD: Name read from device is %s\n", node_name);
+  dev_info(dev, "Node has %d modules\n", no_of_modules);
+  dev_info(dev, "Name read from device is %s\n", node_name);
 
   if (no_of_modules < 0)
     return -EINVAL;

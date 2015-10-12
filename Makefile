@@ -8,5 +8,8 @@ default:
 dev_write: dev_write.c
 	$(CC) -Wall $^ -o $@
 
+scanf_test: scanf_test.c
+	$(CC) -Wall $^ -o $@
+
 dev_read: dev_read.c
 	$(CC) -Wall $^ -o $@

@@ -92,6 +92,9 @@ struct module_info {
 struct module_info modules[] = {
   { "smartio-i2c-hod", ARRAY_SIZE(node_attrs), node_attrs },
   { "adc", ARRAY_SIZE(adc_attrs), adc_attrs },
+  { "adc", ARRAY_SIZE(adc_attrs), adc_attrs },
+  { "dac", ARRAY_SIZE(dac_attrs), dac_attrs },
+  { "dac", ARRAY_SIZE(dac_attrs), dac_attrs },
   { "dac", ARRAY_SIZE(dac_attrs), dac_attrs }
 };
 
@@ -137,7 +140,7 @@ static int communicate(struct smartio_node* this,
       return -1;
     }
     rx->data_len = 3 + strlen(module_name) + 1;
-    smartio_write_16bit(rx, 1, 3);
+    smartio_write_16bit(rx, 1, ARRAY_SIZE(modules));
     strcpy(rx->data + 3, module_name);
     break;
   case SMARTIO_GET_NO_OF_ATTRIBUTES:
