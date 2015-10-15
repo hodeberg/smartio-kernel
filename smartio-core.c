@@ -20,7 +20,11 @@ struct smartio_devread_work;
 
 /* Char device major number */
 static int major;
-
+/* Serialize these two ops:
+   1) find currently highest device id on the bus
+   2) register the new device
+*/
+static DEFINE_MUTEX(id_lock);
 
 static void free_groups(struct attribute_group** groups);
 
@@ -394,48 +398,46 @@ int smartio_get_attr_info(struct smartio_node* node,
 }
 
 
-static int smartio_get_attr_value(struct smartio_node* node, 
-				  int function,
+static int smartio_get_attr_value(struct fcn_dev *fcn_dev,
 				  int attr,
 				  int arr_ix,
 				  void *data,
 				  int *len)
 {
-  struct smartio_comm_buf* buf;
   int status;
+  struct smartio_comm_buf* buf = kzalloc(sizeof *buf, GFP_KERNEL);
 
-  buf = kzalloc(sizeof *buf, GFP_KERNEL);
   if (!buf) 
     return -ENOMEM;
 
   buf->data_len = 5; // module + command + attr ix + array ix
-  buf->data[0] = function;
+  buf->data[0] = fcn_dev->function_ix;
   buf->data[1] =  SMARTIO_GET_ATTR_VALUE;
   smartio_write_16bit(buf, 2, attr);
   buf->data[4] = arr_ix;
-  status = post_request(node, buf);
+  status = post_request(to_node(fcn_dev->dev.parent), buf);
   if (status < 0) {
-    dev_err(&node->dev, "DARN DARN DARN\n");
+    dev_err(&fcn_dev->dev, "DARN DARN DARN\n");
     return status;
   }
 
   if (buf->data_len <= 2) {
-    dev_err(&node->dev, "get_attr_value: illegal data length %d\n", buf->data_len);
+    dev_err(&fcn_dev->dev, "get_attr_value: illegal data length %d\n", buf->data_len);
     return -ENOMEM; // TBD: err to indicate wrong data size
   }
   if (buf->data[0] != SMARTIO_SUCCESS) {
     switch (buf->data[0]) {
     case SMARTIO_ILLEGAL_MODULE_INDEX:
-      dev_err(&node->dev, "get_attr_value: illegal module index %d\n", node->dev.id);
+      dev_err(&fcn_dev->dev, "get_attr_value: illegal module index %d\n", fcn_dev->function_ix);
       break;
     case SMARTIO_ILLEGAL_ATTRIBUTE_INDEX:
-      dev_err(&node->dev, "get_attr_value: illegal attribute index %d\n", attr);
+      dev_err(&fcn_dev->dev, "get_attr_value: illegal attribute index %d\n", attr);
       break;
     case SMARTIO_ILLEGAL_ARRAY_INDEX:
-      dev_err(&node->dev, "get_attr_value: illegal array index %d\n", arr_ix);
+      dev_err(&fcn_dev->dev, "get_attr_value: illegal array index %d\n", arr_ix);
       break;
     default:
-      dev_err(&node->dev, "get_attr_value: unknown msg status %d\n", buf->data[0]);
+      dev_err(&fcn_dev->dev, "get_attr_value: unknown msg status %d\n", buf->data[0]);
       break;
     }
     return -ENOMEM; // TBD: err to indicate wrong module index
@@ -446,8 +448,7 @@ static int smartio_get_attr_value(struct smartio_node* node,
   return 0;
 }
 
-int smartio_set_attr_value(struct smartio_node* node, 
-			   int function,
+int smartio_set_attr_value(struct fcn_dev* fcn_dev, 
 			   int attr,
 			   int arr_ix,
 			   void *data,
@@ -461,38 +462,38 @@ int smartio_set_attr_value(struct smartio_node* node,
     return -ENOMEM;
 
   buf->data_len = 5 + len; // module + command + attr ix + array ix
-  buf->data[0] = function;
+  buf->data[0] = fcn_dev->function_ix;
   buf->data[1] =  SMARTIO_SET_ATTR_VALUE;
   smartio_write_16bit(buf, 2, attr);
   buf->data[4] = arr_ix;
   memcpy(buf->data + 5, data, len);
-  dev_info(&node->dev, "Posting %d bytes of attr data\n", len);
-  status = post_request(node, buf);
+  dev_info(&fcn_dev->dev, "Posting %d bytes of attr data\n", len);
+  status = post_request(to_node(fcn_dev->dev.parent), buf);
   if (status < 0) {
-    dev_err(&node->dev, "%s: request failed. Error %d\n", __func__, status);
+    dev_err(&fcn_dev->dev, "%s: request failed. Error %d\n", __func__, status);
     return status;
   }
 
   if (buf->data_len != 1) {
-    dev_err(&node->dev, "%s: illegal data length %d\n", __func__, buf->data_len);
+    dev_err(&fcn_dev->dev, "%s: illegal data length %d\n", __func__, buf->data_len);
     return -ENOMEM; // TBD: err to indicate wrong data size
   }
   if (buf->data[0] != SMARTIO_SUCCESS) {
     switch (buf->data[0]) {
     case SMARTIO_ILLEGAL_MODULE_INDEX:
-      dev_err(&node->dev, "%s: illegal module index %d\n", __func__, node->dev.id);
+      dev_err(&fcn_dev->dev, "%s: illegal module index %d\n", __func__, fcn_dev->function_ix);
       break;
     case SMARTIO_ILLEGAL_ATTRIBUTE_INDEX:
-      dev_err(&node->dev, "%s: illegal attribute index %d\n", __func__, attr);
+      dev_err(&fcn_dev->dev, "%s: illegal attribute index %d\n", __func__, attr);
       break;
     case SMARTIO_ILLEGAL_ARRAY_INDEX:
-      dev_err(&node->dev, "%s: illegal array index %d\n", __func__, arr_ix);
+      dev_err(&fcn_dev->dev, "%s: illegal array index %d\n", __func__, arr_ix);
       break;
     case   SMARTIO_NO_PERMISSION:
-      dev_err(&node->dev, "%s: no permission to write attribute %d\n", __func__, arr_ix);
+      dev_err(&fcn_dev->dev, "%s: no permission to write attribute %d\n", __func__, arr_ix);
       break;
     default:
-      dev_err(&node->dev, "%s: unknown msg status %d\n", __func__, buf->data[0]);
+      dev_err(&fcn_dev->dev, "%s: unknown msg status %d\n", __func__, buf->data[0]);
     }
     return -ENOMEM; // TBD: err to indicate wrong module index
   }
@@ -513,10 +514,9 @@ static ssize_t show_fcn_attr(struct device *dev,
 			     struct device_attribute *attr,
 			     char *buf)
 {
-	u8 mybuf[40];
+	u8 mybuf[SMARTIO_DATA_SIZE];
 	int result;
 	int bytes_read;
-	struct smartio_node *node = container_of(dev->parent, struct smartio_node, dev);
 	struct fcn_dev *fcn = container_of(dev, struct fcn_dev, dev);
 	struct fcn_attribute* fcn_attr = container_of(attr, struct fcn_attribute, dev_attr);
 
@@ -525,8 +525,7 @@ static ssize_t show_fcn_attr(struct device *dev,
                  fcn_attr->attr_ix, fcn_attr->type);
 	dump_node(dev);
 
-	result = smartio_get_attr_value(node, 
-					fcn->function_ix,
+	result = smartio_get_attr_value(fcn,
 					fcn_attr->attr_ix,
 					0xFF, /* No arrays for now */
 					mybuf,
@@ -542,7 +541,6 @@ static ssize_t store_fcn_attr(struct device *dev,
 {
 	char rawbuf[40];
 	int raw_len;
-	struct smartio_node *node = container_of(dev->parent, struct smartio_node, dev);
 	struct fcn_dev *fcn = container_of(dev, struct fcn_dev, dev);
 	struct fcn_attribute* fcn_attr = container_of(attr, struct fcn_attribute, dev_attr);
 
@@ -554,8 +552,7 @@ static ssize_t store_fcn_attr(struct device *dev,
 		 buf);
 	smartio_string_to_raw(fcn_attr->type, buf, rawbuf, &raw_len);
 	dev_info(dev, "rawbuf: %s, len: %d\n", rawbuf, raw_len);
-	smartio_set_attr_value(node,
-			       fcn->function_ix,
+	smartio_set_attr_value(fcn,
 			       fcn_attr->attr_ix,
 			       0xFF, /* No arrays for now */
 			       rawbuf,
@@ -590,7 +587,7 @@ static struct attribute *create_attr(const struct attr_info *cur_attr,
 	fcn_attr->dev_attr.show = show_fcn_attr;
 	fcn_attr->attr_ix = fcn_number;
 	fcn_attr->type = type;
-	name_cpy = kmalloc(strlen(name)+1, GFP_KERNEL);
+	name_cpy = kstrdup(name, GFP_KERNEL);
 	if (!name_cpy)
 		goto release_attr;
 	strcpy(name_cpy, name);
@@ -886,6 +883,9 @@ struct dev_match {
 };
 
 
+
+
+
 static int update_devid_if_match(struct device *dev, void *data)
 {
   struct dev_match *info = data;
@@ -966,9 +966,6 @@ static int create_function_device(struct smartio_node *node,
 
 		function_dev->dev.parent = &node->dev;
 		function_dev->dev.bus = &smartio_bus;
-		function_dev->dev.id = get_highest_dev_id(function_name) + 1;
-		dev_set_name(&function_dev->dev, "%s%d", function_name,
-			     function_dev->dev.id);
 		//      function_dev->dev.class = &smartio_function_class;
 		function_dev->dev.release = function_release;
 		define_function_attrs(node, 
@@ -982,6 +979,9 @@ static int create_function_device(struct smartio_node *node,
 		}
 		if (MAJOR(function_dev->dev.devt))
 		  function_dev->dev.type = &smartio_chardev_function;
+		function_dev->dev.id = get_highest_dev_id(function_name) + 1;
+		dev_set_name(&function_dev->dev, "%s%d", function_name,
+			     (int) function_dev->dev.id);
 		status = device_register(&function_dev->dev);
 		if (status < 0) {
 			dev_err(&node->dev, 
@@ -1015,7 +1015,6 @@ done:
   dev: the hardware device (i2c, spi, ...)
   node: the function bus controller device
 */
-#define USE_TYPE
 static int smartio_register_node(struct device *dev, struct smartio_node *node, char *name)
 {
 	int status = -1;
@@ -1024,13 +1023,17 @@ static int smartio_register_node(struct device *dev, struct smartio_node *node, 
 	node->dev.parent = dev;
 	node->dev.bus = &smartio_bus;
 	node->dev.type = &controller_devt;
+
+	mutex_lock(&id_lock);
 	node->dev.id = get_highest_dev_id(smartio_bus.dev_name) + 1;
 	dev_info(dev, "Allocated node number %d\n", node->dev.id);
-	if (node->dev.id < 0)
-		return node->dev.id;
-
+	if (node->dev.id < 0) {
+	  mutex_unlock(&id_lock);
+	  return node->dev.id;
+	}
 	dev_set_drvdata(dev, node);
 	status = device_add(&node->dev);
+	mutex_unlock(&id_lock);
 	dev_info(dev, "Added node %s\n", dev_name(&node->dev));
 	if (status < 0) {
 		dev_err(dev, "Failed to add node device\n");
@@ -1334,7 +1337,6 @@ static ssize_t dev_write(struct file *filep, const char __user *buf,
 			 size_t count, loff_t *ppos)
 {
   struct fcn_dev *fcn_dev = (struct fcn_dev*) filep->private_data;
-  struct smartio_node *node = container_of(fcn_dev->dev.parent, struct smartio_node, dev);
   char rawbuf[ATTR_MAX_PAYLOAD];
 
   int bytes_left = count;
@@ -1359,8 +1361,7 @@ static ssize_t dev_write(struct file *filep, const char __user *buf,
       else
 	return EFAULT;
     }
-    smartio_set_attr_value(node,
-			   fcn_dev->function_ix,
+    smartio_set_attr_value(fcn_dev,
 			   fcn_dev->devattr.attr_ix,
 			   0xFF, /* No arrays for now */
 			   rawbuf,

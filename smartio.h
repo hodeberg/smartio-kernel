@@ -34,7 +34,7 @@ struct smartio_node {
 		     struct smartio_comm_buf* rx);
 };
 
-#define to_node(dev) container_of((dev),struct smartio_node, dev)
+#define to_node(d) container_of(d,struct smartio_node, dev)
 
 int devm_smartio_register_node(struct device *dev);
 int dev_smartio_register_node(struct device *dev, 
