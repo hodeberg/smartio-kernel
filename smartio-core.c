@@ -501,7 +501,7 @@ int smartio_set_attr_value(struct fcn_dev* fcn_dev,
   return 0;
 }
 
-
+#if 0
 static void dump_node(struct device * dev)
 {
   	struct smartio_node *node = container_of(dev->parent, struct smartio_node, dev);
@@ -509,6 +509,7 @@ static void dump_node(struct device * dev)
 	dev_info(dev, "dumping node %d\n", dev->id);
 	dev_info(dev, "node communicate fcn: %p\n", node->communicate);
 }
+#endif
 
 static ssize_t show_fcn_attr(struct device *dev,
 			     struct device_attribute *attr,
@@ -523,7 +524,6 @@ static ssize_t show_fcn_attr(struct device *dev,
 	dev_info(dev, "Calling show fcn for node %d, fcn ix %d, attr %s, ix %d, type %d\n", 
 		 dev->parent->id, fcn->function_ix, attr->attr.name, 
                  fcn_attr->attr_ix, fcn_attr->type);
-	dump_node(dev);
 
 	result = smartio_get_attr_value(fcn,
 					fcn_attr->attr_ix,
