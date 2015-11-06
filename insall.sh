@@ -1,5 +1,5 @@
 #!/bin/sh
 
 insmod smartio_core.ko
-insmod smart.ko
-insmod adc.ko
+insmod smartio_i2c.ko
+insmod smartio_adc.ko
