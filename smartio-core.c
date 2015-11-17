@@ -1192,7 +1192,7 @@ static void wq_fcn_dev_read(struct work_struct *w)
   else 
     pr_err("Failed to allocate dev read comms buffer\n");
 
-  schedule_delayed_work(&my_work->work, msecs_to_jiffies(1000));
+  queue_delayed_work(work_queue, &my_work->work, msecs_to_jiffies(1000));
 }
 
 static int dev_open(struct inode *i, struct file *filep)
