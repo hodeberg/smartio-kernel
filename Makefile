@@ -16,3 +16,10 @@ scanf_test: scanf_test.c
 
 dev_read: dev_read.c
 	$(CC) -Wall $^ -o $@
+
+enable_smartio_line: enable_smartio_line.c
+	$(CC) -Wall $^ -o $@
+
+serio: serio.c
+	$(CC) -Wall $^ -o $@
+
