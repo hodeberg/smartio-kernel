@@ -36,24 +36,22 @@ ETX
 */
 
 void unescape_buffer(unsigned char *buf, int size);
-static void write_buf(int fd, const unsigned char *buf, int size);
-static int read_buf(int fd, unsigned char *buf);
+static void write_buf(int fd, unsigned char *buf, int size);
+static int read_buf(int fd, unsigned char *buf, const unsigned int max_size);
 static void dump_buf(const unsigned char *buf);
+int read_no_of_modules(int fd);
+int read_no_of_attributes(int fd, unsigned int module);
+
 char *serport = "/dev/ttyUSB0";
+int trans_id = 4;
 
 int main(int argc, char *argv[])
 {
   struct termios settings;
-  int trans_id = 4;
-  unsigned char get_no_of_modules[] = {
-    0,
-    (REQ << 4) | trans_id,
-    0, // MODULE 0
-    SMARTIO_GET_NO_OF_MODULES
-  };
-  unsigned char readbuf[100];
-  int isOK;
+
   const int fd = open(serport, O_RDWR);
+  int modules;
+  int i;
 
   if (fd < 0) {
     printf("Failed to open %s due to: %s\n", serport, strerror(errno));
@@ -78,11 +76,14 @@ int main(int argc, char *argv[])
     goto failed_attr;
   }
 
-  write_buf(fd, get_no_of_modules, sizeof get_no_of_modules);
-  printf("success writing!\n");
-  isOK = read_buf(fd, readbuf);
-  printf("read status: %s\n", isOK ? "OK" : "FAIL");
-  dump_buf(readbuf);
+  modules = read_no_of_modules(fd);
+
+  for (i=0; i < modules; i++) {
+    const int attrs = read_no_of_attributes(fd, i);
+
+    (void) attrs;
+  }
+
 
  failed_attr:
   close(fd);
@@ -91,8 +92,81 @@ int main(int argc, char *argv[])
 }
 
 
+int read_no_of_modules(int fd)
+{
+  unsigned char get_no_of_modules[] = {
+    0,
+    (REQ << 4),
+    0, // MODULE 0
+    SMARTIO_GET_NO_OF_MODULES
+  };
+  int isOK;
+  char node_name[20];
+  unsigned char readbuf[100];
+  int no_of_modules = -1;
 
-//void read_no_of_modules(
+  printf("Sending no_of_modules request.\n");
+  write_buf(fd, get_no_of_modules, sizeof get_no_of_modules);
+  isOK = read_buf(fd, readbuf, sizeof readbuf);
+    printf("read status: %s\n", isOK ? "OK" : "FAIL");
+  if (isOK) {
+    const int cmd_status = readbuf[2];
+
+    if (cmd_status == 0) {
+      const int name_size = readbuf[0]- 7;
+
+      no_of_modules = (readbuf[3] << 8) + readbuf[4];
+      printf("name length: %d\n", name_size);
+      strncpy(node_name, (char*)readbuf + 5, name_size);
+      node_name[name_size] = '\0';
+      printf("name : %s\n", node_name);
+      printf("number of functions: %d\n", no_of_modules);
+    }
+    else {
+      printf("Cmd failure result: %d\n", cmd_status);
+      dump_buf(readbuf);
+    }
+  }
+  return no_of_modules;
+}
+
+int read_no_of_attributes(int fd, unsigned int module)
+{
+  unsigned char req[] = {
+    0,
+    (REQ << 4),
+    module,
+    SMARTIO_GET_NO_OF_ATTRIBUTES
+  };
+  int isOK;
+  char name[20];
+  unsigned char readbuf[100];
+  int no_of_attrs = -1;
+
+  printf("Sending no_of_attrs request for function %d.\n", module);
+  write_buf(fd, req, sizeof req);
+  isOK = read_buf(fd, readbuf, sizeof readbuf);
+    printf("read status: %s\n", isOK ? "OK" : "FAIL");
+  if (isOK) {
+    const int cmd_status = readbuf[2];
+
+    if (cmd_status == 0) {
+      const int name_size = readbuf[0]- 7;
+
+      no_of_attrs = (readbuf[3] << 8) + readbuf[4];
+      printf("name length: %d\n", name_size);
+      strncpy(name, (char*)readbuf + 5, name_size);
+      name[name_size] = '\0';
+      printf("name : %s\n", name);
+      printf("number of functions: %d\n", no_of_attrs);
+    }
+    else {
+      printf("Cmd failure result: %d\n", cmd_status);
+      dump_buf(readbuf);
+    }
+  }
+  return no_of_attrs;
+}
 
 static void dump_buf(const unsigned char *buf)
 {
@@ -105,15 +179,17 @@ static void dump_buf(const unsigned char *buf)
 }
 
 
-static void write_buf(int fd, const unsigned char *buf, int size)
+static void write_buf(int fd, unsigned char *buf, int size)
 {
   int bytes_written;
   int i;
   unsigned char escaped_buf[100];
   unsigned char *dest = escaped_buf;
 
+
+  buf[1] |= trans_id;
+  trans_id = (trans_id + 1) % 16;
   *dest++ = STX;
-  
   for (i=0; i < size; i++) {
     if ((buf[i] == STX) ||  (buf[i] == ETX) ||  (buf[i] == ESC)) {
       *dest++ = ESC;
@@ -181,7 +257,7 @@ static void read_buf(int fd)
   printf("\n\n");
 }
 #else
-static int read_buf(int fd, unsigned char *buf)
+static int read_buf(int fd, unsigned char *buf, const unsigned int max_size)
 {
   unsigned int wr_ix = 0;
   int hunting = 1;
@@ -193,15 +269,18 @@ static int read_buf(int fd, unsigned char *buf)
 
     if (bytes_read != 1) { 
       printf("Error return %d, restarting scanning for STX.\n", bytes_read);
+      perror("Error reading byte\n");
       hunting = 1;
       continue;
     }
     if (hunting) {
       if (buf[wr_ix] == STX) {
+	printf("Found STX!\n");
 	hunting = 0;
       }
     }
     else {
+      printf("Read char %d at ix %d\n", (int) buf[wr_ix], wr_ix);
       switch (buf[wr_ix]) {
       case STX:
       printf("Found STX in mid-stream offset %d, resetting.\n", wr_ix);
@@ -220,6 +299,12 @@ static int read_buf(int fd, unsigned char *buf)
 	  buf[0]--;
 	}
 	wr_ix++;
+	if (wr_ix >= max_size) {
+	  wr_ix = 0;
+	  hunting = 1;
+	  escaping = 0;
+	  printf("Read beyond buffer size, starting to hunt again.\n");
+	}
 	break;
       }
     }
