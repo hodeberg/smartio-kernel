@@ -4,6 +4,7 @@
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
+#include <stdint.h>
 
 #define STX 2
 #define ETX 3
@@ -35,12 +36,25 @@ CRC-16, MSB first
 ETX
 */
 
+/* The attribute definition */
+#define IO_IS_INPUT 0x80
+#define IO_IS_OUTPUT 0x40
+#define IO_IS_DEVICE 0x20
+#define IO_IS_DIR 0x10
+
+struct dev_attr_info {
+  uint8_t flags; /*  */
+  uint8_t arraySize;
+  uint8_t type;
+};
+
 void unescape_buffer(unsigned char *buf, int size);
 static void write_buf(int fd, unsigned char *buf, int size);
 static int read_buf(int fd, unsigned char *buf, const unsigned int max_size);
 static void dump_buf(const unsigned char *buf);
 int read_no_of_modules(int fd);
 int read_no_of_attributes(int fd, unsigned int module);
+void read_attr_def(int fd, unsigned int module, unsigned int attr_ix, struct dev_attr_info *attr);
 
 char *serport = "/dev/ttyUSB0";
 int trans_id = 4;
@@ -80,8 +94,13 @@ int main(int argc, char *argv[])
 
   for (i=0; i < modules; i++) {
     const int attrs = read_no_of_attributes(fd, i);
+    int j;
 
-    (void) attrs;
+    for (j=0; j < attrs; j++) {
+      struct dev_attr_info attr;
+
+      read_attr_def(fd, i, j, &attr);
+    }
   }
 
 
@@ -167,6 +186,56 @@ int read_no_of_attributes(int fd, unsigned int module)
   }
   return no_of_attrs;
 }
+
+
+void read_attr_def(int fd, unsigned int module, unsigned int attr_ix, struct dev_attr_info *attr)
+{
+  unsigned char req[] = {
+    0,
+    (REQ << 4),
+    module,
+    SMARTIO_GET_ATTRIBUTE_DEFINITION,
+    attr_ix >> 8,
+    attr_ix
+  };
+  int isOK;
+  char name[20];
+  unsigned char readbuf[100];
+
+  printf("Sending attrdef request for function %d, attr %d.\n", module, attr_ix);
+  write_buf(fd, req, sizeof req);
+  isOK = read_buf(fd, readbuf, sizeof readbuf);
+    printf("read status: %s\n", isOK ? "OK" : "FAIL");
+  if (isOK) {
+    const int cmd_status = readbuf[2];
+
+    if (cmd_status == 0) {
+      const int name_size = readbuf[0]- 8;
+
+      attr->flags = readbuf[3];
+      attr->arraySize = readbuf[4];
+      attr->type = readbuf[5];
+      printf("input bit: %c\n", (attr->flags & IO_IS_INPUT) ? '1' : '0');
+      printf("output bit: %c\n", (attr->flags & IO_IS_OUTPUT) ? '1' : '0');
+      printf("device bit: %c\n", (attr->flags & IO_IS_DEVICE) ? '1' : '0');
+      printf("dir bit: %c\n", (attr->flags & IO_IS_DIR) ? '1' : '0');
+      printf("Array size: %d\n", (int) attr->arraySize);
+      printf("Type: %d\n", (int) attr->type);
+
+      printf("name length: %d\n", name_size);
+      strncpy(name, (char*)readbuf + 6, name_size);
+      name[name_size] = '\0';
+      printf("name : %s\n", name);
+    }
+    else {
+      printf("Cmd failure result: %d\n", cmd_status);
+      dump_buf(readbuf);
+    }
+  }
+}
+
+
+
 
 static void dump_buf(const unsigned char *buf)
 {
@@ -280,7 +349,9 @@ static int read_buf(int fd, unsigned char *buf, const unsigned int max_size)
       }
     }
     else {
+#if 0
       printf("Read char %d at ix %d\n", (int) buf[wr_ix], wr_ix);
+#endif
       switch (buf[wr_ix]) {
       case STX:
       printf("Found STX in mid-stream offset %d, resetting.\n", wr_ix);
