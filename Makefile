@@ -20,6 +20,14 @@ dev_read: dev_read.c
 enable_smartio_line: enable_smartio_line.c
 	$(CC) -Wall $^ -o $@
 
-serio: serio.c
-	$(CC) -Wall $^ -o $@
 
+serio_flags = -Du8="unsigned char"
+
+serio: serio.o convert_serio.o
+	$(CC) $(serio_flags) -Wall $^ -o $@
+
+serio.o: serio.c
+	$(CC) $(serio_flags) -Wall -c $^ -o $@
+
+convert_serio.o: convert_serio.c
+	$(CC) $(serio_flags) -Wall -c  $^ -o $@

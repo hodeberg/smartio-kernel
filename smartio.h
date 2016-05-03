@@ -49,17 +49,7 @@ int smartio_unregister_node(struct device *dev, void* null);
 int smartio_get_no_of_modules(struct smartio_node* node, char* name);
 
 
-#if 0
-enum smartio_io_types {
-  IO_STRING,
-  IO_TEMP_C,
-  IO_TEMP_K,
-  IO_INT8,
-  IO_INT16,
-  IO_INT32,
-  /* To be continued */
-};
-#else
+
 enum smartio_io_types {
   IO_ZERO,
   IO_AMPERE, /* 1 Ampere */
@@ -100,8 +90,6 @@ enum smartio_io_types {
 };
 
 
-
-#endif
 
 enum smartio_status {
   SMARTIO_SUCCESS,

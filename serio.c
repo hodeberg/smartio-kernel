@@ -6,6 +6,8 @@
 #include <unistd.h>
 #include <stdint.h>
 
+#include "convert.h"
+
 #define STX 2
 #define ETX 3
 #define ESC 27
@@ -55,6 +57,9 @@ static void dump_buf(const unsigned char *buf);
 int read_no_of_modules(int fd);
 int read_no_of_attributes(int fd, unsigned int module);
 void read_attr_def(int fd, unsigned int module, unsigned int attr_ix, struct dev_attr_info *attr);
+void read_attr_value(int fd, unsigned int module, 
+		     unsigned int attr_ix, unsigned int arr_ix,
+		     unsigned int type);
 
 char *serport = "/dev/ttyUSB0";
 int trans_id = 4;
@@ -100,6 +105,7 @@ int main(int argc, char *argv[])
       struct dev_attr_info attr;
 
       read_attr_def(fd, i, j, &attr);
+      read_attr_value(fd, i, j, 0xFF, attr.type);
     }
   }
 
@@ -235,6 +241,51 @@ void read_attr_def(int fd, unsigned int module, unsigned int attr_ix, struct dev
 }
 
 
+void read_attr_value(int fd, unsigned int module,
+		     unsigned int attr_ix, unsigned int arr_ix,
+		     unsigned int type)
+{
+  unsigned char req[] = {
+    0,
+    (REQ << 4),
+    module,
+    SMARTIO_GET_ATTR_VALUE,
+    attr_ix >> 8,
+    attr_ix,
+    arr_ix
+  };
+  int isOK;
+  unsigned char readbuf[100];
+
+  printf("Sending attr value request for function %d, attr %d, arr_ix %d.\n", 
+	 module, attr_ix, arr_ix);
+  write_buf(fd, req, sizeof req);
+  isOK = read_buf(fd, readbuf, sizeof readbuf);
+    printf("read status: %s\n", isOK ? "OK" : "FAIL");
+  if (isOK) {
+    const int cmd_status = readbuf[2];
+    char value[20];
+
+    if (cmd_status == 0) {
+      const int data_size = readbuf[0] - 5;
+      int i;
+
+      printf("Data size: %d\nData (hex): ", data_size);
+      for(i=0; i < data_size; i++)
+	printf("%x ", (int) readbuf[i+3]);
+      printf("\n");
+      smartio_raw_to_string(type, readbuf + 3, value);
+      value[strlen(value)-1] = '\0'; // Get rid of \n at the end
+      printf("Converted value: '%s'\n", value);
+    }
+    else {
+      printf("Cmd failure result: %d\n", cmd_status);
+      dump_buf(readbuf);
+    }
+  }
+}
+
+
 
 
 static void dump_buf(const unsigned char *buf)
@@ -278,54 +329,6 @@ static void write_buf(int fd, unsigned char *buf, int size)
 }
 
 
-#if 0
-static void read_buf(int fd)
-{
-  unsigned char buf[100];
-  unsigned int wr_ix = 0;
-  unsigned int i;
-  int bytes_to_read = 2;  // STX and size
-
-  while (bytes_to_read > 0) {
-    printf("About to read %d bytes.\n", bytes_to_read);
-#if 1
-    int bytes_read = read(fd, buf + wr_ix, bytes_to_read);
-#else
-    int bytes_read = read(fd, buf + wr_ix, 1);
-#endif
-
-    if (wr_ix == 0) {
-      if (bytes_read < 2) {
-	printf("Only read %d bytes 1st time.\n", bytes_read);
-	return;
-      }
-      else {
-	printf("Size is %d.\n", (int) buf[1]);
-        bytes_to_read = buf[1];
-      }
-    }
-    printf("Actual # of bytes: %d bytes.\n", bytes_read);
-    if (bytes_read < 0) {
-      perror("Failed to write message\n");
-      return;
-    }
-    wr_ix += bytes_read;
-    bytes_to_read = buf[1] - wr_ix + 2;
-  }
-
-  printf("Dumping read buffer:\n");
-  for (i=0; i < wr_ix; i++)
-    printf("%x ", (int) buf[i]);
-  printf("\n\n");
-
-  unescape_buffer(buf, wr_ix);
-
-  printf("Dumping unescaped read buffer:\n");
-  for (i=0; i < (buf[1]+2); i++)
-    printf("%x ", (int) buf[i]);
-  printf("\n\n");
-}
-#else
 static int read_buf(int fd, unsigned char *buf, const unsigned int max_size)
 {
   unsigned int wr_ix = 0;
@@ -381,8 +384,6 @@ static int read_buf(int fd, unsigned char *buf, const unsigned int max_size)
     }
   }
 }
-
-#endif
 
 void unescape_buffer(unsigned char *buf, int size)
 {
