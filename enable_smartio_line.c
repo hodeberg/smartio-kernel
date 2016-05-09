@@ -6,6 +6,7 @@
 #include <signal.h>
 #include <sys/ioctl.h>
 #include <stdlib.h>
+#include <termios.h>
 
 int fd;
 
@@ -27,6 +28,7 @@ int main()
   const int ldisc = 28;
   const int ldisc_default = 0;
   struct sigaction new_action, old_action;
+  struct termios settings;
 
   new_action.sa_handler = termination_handler;
   sigemptyset(&new_action.sa_mask);
@@ -48,11 +50,35 @@ int main()
 	   strerror(errno));
     return 1;
   }
+
+  if (tcgetattr(fd, &settings) < 0) {
+    perror("Failed to get attributes\n");
+    goto failed_attr;
+  }
+  printf("before: c_lflag = %x, c_cflag = %x\n", settings.c_lflag, settings.c_cflag);
+  if (cfsetspeed(&settings, B9600) < 0) {
+    perror("Failed to set attributes\n");
+    goto failed_attr;
+  }
+  settings.c_cflag |= CLOCAL;
+  settings.c_cflag &= ~CSTOPB;
+  settings.c_cflag &= ~CSIZE;
+  settings.c_cflag |= CS8;
+  printf("after: c_lflag = %x, c_cflag = %x\n", settings.c_lflag, settings.c_cflag);
+  if (tcsetattr(fd, TCSANOW, &settings) < 0) {
+    perror("Failed to set attributes\n");
+    goto failed_attr;
+  }
+
   ioctl(fd, TIOCSETD, &ldisc);
   for(;;) sleep(10);  
 
   if (fd > 0) {
     ioctl(fd, TIOCSETD, &ldisc_default);
   }
+
+ failed_attr:
+  close(fd);
+
   return 0;
 }
