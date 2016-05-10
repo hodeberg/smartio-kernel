@@ -23,9 +23,13 @@ static void write_buf(struct tty_struct *tty)
     0x22,
     ETX
   };
+  int chars_written;
 
-  tty->driver->ops->write(tty, get_no_of_modules, ARRAY_SIZE(get_no_of_modules));
-  pr_warn("smartio_uart: wrote %lu chars\n", ARRAY_SIZE(get_no_of_modules));
+  chars_written = tty->driver->ops->write(tty,
+					  get_no_of_modules,
+					  ARRAY_SIZE(get_no_of_modules));
+  pr_warn("smartio_uart: wrote %d chars out of %lu\n", chars_written, ARRAY_SIZE(get_no_of_modules));
+  tty_driver_flush_buffer(tty);
 }
 
 static int l_open(struct tty_struct *tty)

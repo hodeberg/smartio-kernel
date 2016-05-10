@@ -345,6 +345,11 @@ static int read_buf(int fd, unsigned char *buf, const unsigned int max_size)
       hunting = 1;
       continue;
     }
+    else {
+      const int c = buf[wr_ix];
+
+      printf("Read %d %X %c\n", c, c, (char) c); 
+    }
     if (hunting) {
       if (buf[wr_ix] == STX) {
 	printf("Found STX!\n");
