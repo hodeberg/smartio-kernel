@@ -7,4 +7,5 @@ smartio_core-y = smartio-core.o \
 		 comm_buf.o
 obj-m += smartio_adc.o
 obj-m += smartio_uart.o
+obj-m += edison_smbus.o
 ccflags-y := -DVERSION=$(VERSION) -DPATCHLEVEL=$(PATCHLEVEL)

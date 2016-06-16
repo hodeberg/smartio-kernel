@@ -141,9 +141,12 @@ struct smartio_devread_work {
   struct fcn_dev* fcn_dev; 
 };
 
+struct smartio_indication_work {
+  struct work_struct work;
+  struct smartio_comm_buf *comm_buf;
+};
 
 static DECLARE_WAIT_QUEUE_HEAD(wait_queue);
-
 
 
 static void handle_response(struct smartio_comm_buf *resp)
@@ -159,6 +162,52 @@ static void handle_response(struct smartio_comm_buf *resp)
 	wake_up_interruptible(&wait_queue);
   }
 }
+
+static void wq_fcn_handle_indication(struct work_struct *w)
+{
+  struct smartio_work *my_work = container_of(w, struct smartio_work, work);
+
+#ifdef DBG_TRANS
+  pr_info("HAOD: indication work function\n");
+#endif
+  handle_response(my_work->comm_buf);
+  kfree(my_work->comm_buf);
+  kfree(my_work);
+}
+
+
+void handle_indication(struct smartio_node *node, struct smartio_comm_buf *ind)
+{
+  struct smartio_work *my_work = kmalloc(sizeof *my_work, GFP_KERNEL);
+  int status;
+
+  pr_info("Entering handle_indication\n");
+
+  if (!my_work) {
+    dev_err(&node->dev, "No memory for work item\n");
+    return;
+  }
+
+  INIT_WORK(&my_work->work, wq_fcn_handle_indication);
+  my_work->comm_buf = ind;
+  my_work->node = node;
+#ifdef DBG_WORK
+  pr_info("Before queueing indication work\n");
+#endif
+  status = queue_work(work_queue, &my_work->work);
+#ifdef DBG_WORK
+  pr_info("After queueing indication work\n");
+#endif
+  if (!status) {
+    dev_err(&node->dev, "Failed to queue work\n");
+    kfree(my_work->node);
+    kfree(my_work);
+    return;
+  }
+}
+EXPORT_SYMBOL(handle_indication);
+
+
 
 static int talk_to_node(struct smartio_node *node, 
 			struct smartio_comm_buf *tx)
@@ -190,7 +239,6 @@ static int talk_to_node(struct smartio_node *node,
   
   return status;
 }
-
 
 
 static void wq_fcn_post_message(struct work_struct *w)

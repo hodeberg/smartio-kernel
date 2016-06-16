@@ -48,6 +48,9 @@ int smartio_unregister_node(struct device *dev, void* null);
 
 int smartio_get_no_of_modules(struct smartio_node* node, char* name);
 
+/* Used by node drivers to send unsolicited messages back */
+void handle_indication(struct smartio_node *node, struct smartio_comm_buf *ind);
+
 
 
 enum smartio_io_types {

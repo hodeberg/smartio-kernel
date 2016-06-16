@@ -1,5 +1,7 @@
 #include <linux/module.h>
 #include <linux/i2c.h>
+#include <linux/slab.h>
+#include <linux/workqueue.h>
 #include "smartio.h"
 #include "smartio_inline.h"
 
@@ -314,7 +316,7 @@ static int communicate(struct smartio_node* this,
     return -1;
   }
   rx->data_len = rbuf[0] - 2;
-  if (rx->data_len < 3) {
+  if (rx->data_len < 0) {
     dev_err(&this->dev, 
 	    "i2c exchange returned too small a buffer, only  %d bytes\n",
 	    rx->data_len);
@@ -336,39 +338,56 @@ static int communicate(struct smartio_node* this,
 #endif
 
 
+struct smartio_devcreate_work {
+  struct delayed_work work;
+  struct device* i2c_dev; 
+};
+
+static void wq_fcn_dev_create(struct work_struct *w)
+{
+  struct smartio_devcreate_work *my_work = 
+    container_of(to_delayed_work(w), struct smartio_devcreate_work, work);
+  int status;
+
+  pr_info("Delayed creation of smartio node under device %s\n",
+	  dev_name(my_work->i2c_dev));
+  status = dev_smartio_register_node(my_work->i2c_dev,
+				     "smartio-i2c",
+				     communicate);
+  kfree(my_work);
+}
+
 
 static int my_probe(struct i2c_client* client,
 		    const struct i2c_device_id *id)
 {
-  int status;
+  int status = 0;
 #if 0
   int read_status;
   const int cmd = 8;
   const u8 data[] = { 0x20, 0x30, 0x40 };
   u8 read_data[20];
 #endif
+  struct smartio_devcreate_work *my_work;
 
-  pr_info("Probing smart i2c driver for device %s\n", dev_name(&client->dev));
+  dev_info(&client->dev, "Probing smart i2c driver\n");
 
+  // As the smbus alert interrupt is handled by iterating over the
+  // adapter's children, and the device is not added to that
+  // list until after probing is done, we need to delay
+  // the creation of sub-nodes.
   //  status = devm_smartio_register_node(&client->dev);
-  status = dev_smartio_register_node(&client->dev, "smartio-i2c", communicate);
+  my_work = kmalloc(sizeof *my_work, GFP_KERNEL);
+  if (!my_work) {
+    dev_err(&client->dev, "No memory for work item\n");
+    return -1;
+  }
+  INIT_DELAYED_WORK(&my_work->work, wq_fcn_dev_create);
+  my_work->i2c_dev = &client->dev;
+
+  queue_delayed_work(system_long_wq, &my_work->work, msecs_to_jiffies(1000));
   pr_warn("Probe status was %d\n", status);
 
-#if 0
-  pr_warn("About to send data \n");
-  read_status = i2c_smbus_write_i2c_block_data(client, cmd,
-					       ARRAY_SIZE(data), data);
-  pr_warn("Write status was %d\n", read_status);
-  pr_warn("About to read data \n");
-  read_status = i2c_master_recv(client, read_data, 3);
-  pr_warn("Read status was %d\n", read_status);
-  pr_warn("About to exchange data \n");
-  read_status = i2c_exchange(client, 
-			     3, data,
-			     4, read_data);
-                               
-  pr_warn("Read status was %d\n", read_status);
-#endif
   return status; 
 }
 
@@ -382,13 +401,68 @@ static int my_remove(struct i2c_client* client)
 }
 
 
+static int matchall(struct device *dev, void *data)
+{
+  return 1;
+}
+
+static int poll_slave(struct i2c_client *client)
+{
+  char rbuf[32];
+  int result;
+  struct smartio_comm_buf* rx = kzalloc(sizeof *rx, GFP_KERNEL);
+  struct device *smartio_dev = device_find_child(&client->dev, NULL, matchall);
+
+  if (!rx) {
+    dev_err(&client->dev, "Failed to alloc indication buffer\n");
+    return -1;
+  }
+  result = i2c_master_recv(client, rbuf, ARRAY_SIZE(rbuf));
+  if (result < 2) {
+    dev_err(&client->dev, "i2c read failed, result %d\n", result);
+    goto release_commbuf;
+  }
+  rx->data_len = rbuf[0] - 2;
+  if (rx->data_len < 0) {
+    dev_err(&client->dev, 
+	    "i2c exchange returned too small a buffer, only  %d bytes\n",
+	    rx->data_len);
+    goto release_commbuf;
+  }
+  if (rx->data_len > 32) {
+    dev_err(&client->dev, 
+	    "i2c exchange returned too large a buffer,  %d bytes\n",
+	    rx->data_len);
+    goto release_commbuf;
+  }
+  rx->transport_header = rbuf[1];
+  dev_warn(&client->dev, "HAOD: receive len is %d\n", rx->data_len);
+  dev_warn(&client->dev, "HAOD: rcv data ptr is %p\n", rx->data);
+  memcpy(rx->data, rbuf+2, rx->data_len);
+  print_hex_dump_bytes("Comm:", DUMP_PREFIX_OFFSET, rx->data, rx->data_len);
+  
+  handle_indication(to_node(smartio_dev), rx);
+  return 0;
+
+ release_commbuf:
+  kfree(rx);
+  return -1;
+}
+
+static void alert(struct i2c_client *client, unsigned int data)
+{
+  dev_warn(&client->dev, "Alert called. data = %x\n", data);
+  poll_slave(client);
+}
+
 static struct i2c_driver my_driver = {
   .driver = {
     .name = "smart",
   },
   .id_table = my_idtable,
   .probe = my_probe,
-  .remove = my_remove
+  .remove = my_remove,
+  .alert = alert
 };
 
 static int __init my_init(void)
